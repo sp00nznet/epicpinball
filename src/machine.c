@@ -276,6 +276,10 @@ uint64_t emu_us(void)
  * passes) until the handler returns. */
 void machine_port_wait(unsigned us) { virt_us += us; }
 
+/* The host stopped the game for a while (its settings menu): that time did
+ * not pass for the guest. */
+void machine_paused(uint64_t us) { t_start += us; }
+
 void machine_report(void)
 {
     trace("[time] %llu polls, %.1f s emulated\n", (unsigned long long)polls, emu_us() / 1e6);

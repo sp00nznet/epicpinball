@@ -23,12 +23,27 @@ typedef struct {
     int mute;
     int trace;                /* RECOMP_TRACE-ish logging of DOS calls */
     const char *args;         /* game command line tail */
-    int scale;                /* window scale factor */
+    int window;               /* window size, multiples of 320x240 */
     int fullscreen;
-    const char *display;      /* sharp | pixel | crt */
+    const char *scale;        /* --scale MODE: sharp | smooth | crt | nearest | integer */
+    const char *look;         /* --look natural | vivid */
+    const char *bars;         /* --bars blur | black */
+    int whole;                /* --whole-table */
+    int classic;              /* --classic: the game's own picture, no remaster */
+    int present_w, present_h; /* --present WxH: --shot-at frames through the presenter */
     int realtime;             /* headless, but on the wall clock */
 } Options;
 extern Options g_opt;
+
+/* The remaster's picture (host.c keeps it in epicpinball.ini, present.c draws it) */
+enum { PRESENT_SHARP, PRESENT_SMOOTH, PRESENT_CRT, PRESENT_NEAREST, PRESENT_INTEGER, PRESENT_MODES };
+typedef struct {
+    int mode;                 /* PRESENT_* */
+    int look;                 /* 0 natural, 1 vivid */
+    int bars;                 /* beside the picture: 0 black, 1 a blur of it */
+    int whole;                /* the whole table, no scrolling (vga_compose_table) */
+} Present;
+extern int g_audio_smooth;    /* audio.c: interpolate the DSP's samples (else hold them) */
 
 uint64_t host_us(void);
 void     trace(const char *fmt, ...);
@@ -50,13 +65,13 @@ void images_miss(const char *how, uint16_t seg, uint16_t off);
 /* machine.c: PIC, PIT, keyboard controller, speaker, IRQ delivery */
 void machine_init(void);
 void kbd_scancode(uint8_t sc);        /* from the host: one byte of a make/break */
-void mouse_host(int dx, int dy, int buttons);
 int  machine_port_in(uint16_t port, uint8_t *v);
 int  machine_port_out(uint16_t port, uint8_t v);
 void call_vector(CPU *cpu, unsigned vec);    /* run whatever is in the IVT, as INT would */
 uint64_t pit_now(void);
 uint64_t emu_us(void);                /* see machine.c: wall clock, or deterministic */
 void machine_port_wait(unsigned us);  /* a polled port read costs emulated time */
+void machine_paused(uint64_t us);     /* wall-clock time the guest did not see */
 void machine_report(void);               /* emulated time in PIT ticks (1.193182 MHz) */
 #define PIT_HZ 1193182.0
 
@@ -70,6 +85,7 @@ int  vga_port_out(uint16_t port, uint8_t v);
 void vga_dac_set(int i, uint8_t r, uint8_t g, uint8_t b);
 void vga_dac_get(int i, uint8_t *r, uint8_t *g, uint8_t *b);
 void vga_compose(uint32_t *out, int *w, int *h);
+int  vga_compose_table(uint32_t *out, int *w, int *h);   /* the whole table, or 0 */
 extern int g_tick_hold, g_recomp_tick_budget;
 
 /* audio.c: Sound Blaster DSP + 8237 DMA, PC speaker */

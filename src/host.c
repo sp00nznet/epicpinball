@@ -1,9 +1,16 @@
 /*
- * host.c - the modern machine's side: a Win32 window (GDI, nearest-neighbour,
- * 4:3), waveOut audio, keyboard as raw PC scancodes -- or, with --headless,
- * none of that: frames are composed offscreen and, with --record, piped to
- * ffmpeg with the audio muxed in at the end. Headless never touches the
- * desktop, so it works over RDP and from CI (repo rules, section 13).
+ * host.c - the modern machine's side: a Win32 window drawn by the presenter
+ * (present.c, Direct3D 11; GDI if that fails), waveOut audio, keyboard as raw
+ * PC scancodes, an Xbox pad (pad.c) -- or, with --headless, none of that:
+ * frames are composed offscreen and, with --record, piped to ffmpeg with the
+ * audio muxed in at the end. Headless never touches the desktop, so it works
+ * over RDP and from CI (repo rules, section 13).
+ *
+ * The remaster's settings (scaling, colour, the whole table, the bars beside
+ * the picture, fullscreen, the window's place, smooth sound) are kept in
+ * epicpinball.ini in the save folder, changed with F7, F9-F12 or the menu on
+ * right-click / F10. Headless runs ignore the file: what they draw is set on
+ * the command line only, so a test never depends on someone's preferences.
  *
  * Scripted input (--keys "ms:KEY,...") presses and releases keys at fixed
  * points in emulated time, which is how the harness walks the menus and
@@ -14,20 +21,42 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <mmsystem.h>
+#include <shellapi.h>
 #endif
 
 #define FRAME_MAX (640 * 480)
 static uint32_t frame[FRAME_MAX];
 static uint32_t big[FRAME_MAX];
 static int fw = 320, fh = 200;
-static int scan_rows = 200;                     /* the CRT's rows behind the frame */
 static double frame_aspect = 4.0 / 3;
 
+static Present S = { PRESENT_SHARP, 0, 1, 0 };
+static const char *const mode_names[] = { "sharp", "smooth", "crt", "nearest", "integer" };
+
+/* The game's picture as the monitor showed it: what --record and the
+ * conformance shots see. */
 static void compose(void)
 {
     vga_compose(frame, &fw, &fh);
-    scan_rows = fh;
+    frame_aspect = 4.0 / 3;
 }
+
+/* What the player sees: the whole table when that is on and a table is up */
+static void compose_view(void)
+{
+    if (S.whole && !g_opt.classic && vga_compose_table(frame, &fw, &fh)) frame_aspect = (double)fw / fh;
+    else compose();
+}
+
+#ifdef _WIN32
+void present_rect(int cw, int ch, int w, int h, double aspect, int mode, RECT *r);
+int  present_window(HWND hw, const uint32_t *f, int w, int h, double aspect, const Present *s);
+int  present_offscreen(const uint32_t *f, int w, int h, double aspect, const Present *s,
+                       int ow, int oh, uint32_t *out);
+#endif
+void pad_load(void);
+void pad_poll(void);
+const char *pad_ini(void);
 
 /* ---- recording ------------------------------------------------------------ */
 
@@ -119,7 +148,8 @@ typedef struct { uint64_t at; uint8_t sc; uint8_t up; } KeyEv;
 static KeyEv kev[512];
 static int nkev, kev_i;
 
-static int key_by_name(const char *s)
+/* A key's scan code by name, | 0x100 when it is E0-prefixed (the arrows) */
+int host_key_by_name(const char *s)
 {
     static const struct { const char *n; int sc; } t[] = {
         {"ESC",1},{"ENTER",0x1C},{"SPACE",0x39},{"UP",0x48|0x100},{"DOWN",0x50|0x100},
@@ -138,7 +168,7 @@ static void keys_parse(void)
         if (sscanf(p, "%lf:%31[^,]%n", &ms, name, &n) < 2) break;
         char *h = strchr(name, '+');            /* KEY+holdms */
         if (h) { *h = 0; hold = atoi(h + 1); }
-        int sc = key_by_name(name);
+        int sc = host_key_by_name(name);
         uint64_t at = (uint64_t)(ms * PIT_HZ / 1000.0);
         kev[nkev++] = (KeyEv){ at, (uint8_t)sc, 0 };
         kev[nkev++] = (KeyEv){ at + (uint64_t)(hold * PIT_HZ / 1000.0), (uint8_t)sc, 1 };
@@ -161,22 +191,84 @@ static void keys_due(void)
     }
 }
 
+/* ---- settings ------------------------------------------------------------------ */
+
+static int mode_by_name(const char *s)
+{
+    for (int i = 0; i < PRESENT_MODES; i++) if (!_stricmp(s, mode_names[i])) return i;
+    return PRESENT_SHARP;
+}
+
+#ifdef _WIN32
+static char ini[MAX_PATH];
+static HWND wnd;
+static int is_full;
+static Present saved;                /* what the ini says: the command line never reaches it */
+static int saved_full;
+static RECT win_rect;                /* the window's place when not fullscreen */
+
+static void ini_put(const char *sec, const char *k, int v)
+{
+    char s[16]; snprintf(s, sizeof s, "%d", v);
+    WritePrivateProfileStringA(sec, k, s, ini);
+}
+
+static void settings_save(void)
+{
+    if (!*ini) return;
+    char v[64];
+    WritePrivateProfileStringA("display", "scale", mode_names[saved.mode], ini);
+    WritePrivateProfileStringA("display", "look", saved.look ? "vivid" : "natural", ini);
+    WritePrivateProfileStringA("display", "bars", saved.bars ? "blur" : "black", ini);
+    ini_put("display", "whole_table", saved.whole);
+    ini_put("display", "fullscreen", saved_full);
+    if (win_rect.right > win_rect.left) {
+        snprintf(v, sizeof v, "%ld,%ld,%ld,%ld", win_rect.left, win_rect.top,
+                 win_rect.right - win_rect.left, win_rect.bottom - win_rect.top);
+        WritePrivateProfileStringA("display", "window", v, ini);
+    }
+    WritePrivateProfileStringA("sound", "output", g_audio_smooth ? "smooth" : "original", ini);
+}
+
+static void settings_load(void)
+{
+    char v[64];
+    snprintf(ini, sizeof ini, "%s\\epicpinball.ini", g_opt.savedir);
+    GetPrivateProfileStringA("display", "scale", "sharp", v, sizeof v, ini); S.mode = mode_by_name(v);
+    GetPrivateProfileStringA("display", "look", "natural", v, sizeof v, ini); S.look = !_stricmp(v, "vivid");
+    GetPrivateProfileStringA("display", "bars", "blur", v, sizeof v, ini); S.bars = _stricmp(v, "black") != 0;
+    S.whole = GetPrivateProfileIntA("display", "whole_table", 0, ini);
+    saved = S;
+    saved_full = GetPrivateProfileIntA("display", "fullscreen", 0, ini);
+    if (saved_full) g_opt.fullscreen = 1;
+    GetPrivateProfileStringA("display", "window", "", v, sizeof v, ini);
+    long x, y, w, h;
+    if (sscanf(v, "%ld,%ld,%ld,%ld", &x, &y, &w, &h) == 4 && w > 100 && h > 100) {
+        RECT r = { x, y, x + w, y + h };
+        if (MonitorFromRect(&r, MONITOR_DEFAULTTONULL)) win_rect = r;   /* still on a screen */
+    }
+    GetPrivateProfileStringA("sound", "output", "smooth", v, sizeof v, ini);
+    g_audio_smooth = _stricmp(v, "original") != 0;
+}
+#endif
+
+/* The command line wins over the ini, and is all a headless run reads */
+static void settings_args(void)
+{
+    if (g_opt.scale) S.mode = mode_by_name(g_opt.scale);
+    if (g_opt.look) S.look = !_stricmp(g_opt.look, "vivid");
+    if (g_opt.bars) S.bars = _stricmp(g_opt.bars, "black") != 0;
+    if (g_opt.whole) S.whole = 1;
+    if (g_opt.classic) { S.mode = PRESENT_NEAREST; S.look = S.bars = S.whole = 0; }
+}
+
 /* ---- window ---------------------------------------------------------------- */
 
 #ifdef _WIN32
-static HWND wnd;
 static int quit_req;
-static int captured;
+static BITMAPINFO bmi;
 
-static int mouse_buttons_now(void)
-{
-    return ((GetKeyState(VK_LBUTTON) < 0) ? 1 : 0) | ((GetKeyState(VK_RBUTTON) < 0) ? 2 : 0)
-         | ((GetKeyState(VK_MBUTTON) < 0) ? 4 : 0);
-}
-
-void host_snapshot(const char *path);
-
-/* F12: the current frame to screenshots\<game>-NNN.bmp */
+/* PrtSc: what is on screen, to screenshots\epic-NNN.bmp */
 static void screenshot_key(void)
 {
     char p[256];
@@ -186,98 +278,114 @@ static void screenshot_key(void)
         if (GetFileAttributesA(p) == INVALID_FILE_ATTRIBUTES) { host_snapshot(p); return; }
     }
 }
-static BITMAPINFO bmi;
 
-static void toggle_fullscreen(void)
+static void set_fullscreen(int on)
 {
-    static WINDOWPLACEMENT prev = { sizeof prev };
+    if (on == is_full) return;
     DWORD st = GetWindowLong(wnd, GWL_STYLE);
-    if (st & WS_OVERLAPPEDWINDOW) {
+    if (on) {
         MONITORINFO mi = { sizeof mi };
-        GetWindowPlacement(wnd, &prev);
-        GetMonitorInfo(MonitorFromWindow(wnd, MONITOR_DEFAULTTOPRIMARY), &mi);
+        GetWindowRect(wnd, &win_rect);
+        GetMonitorInfo(MonitorFromWindow(wnd, MONITOR_DEFAULTTONEAREST), &mi);
         SetWindowLong(wnd, GWL_STYLE, st & ~WS_OVERLAPPEDWINDOW);
         SetWindowPos(wnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
                      mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
                      SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
     } else {
         SetWindowLong(wnd, GWL_STYLE, st | WS_OVERLAPPEDWINDOW);
-        SetWindowPlacement(wnd, &prev);
-        SetWindowPos(wnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        SetWindowPos(wnd, NULL, win_rect.left, win_rect.top, win_rect.right - win_rect.left,
+                     win_rect.bottom - win_rect.top, SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
     }
+    is_full = on;
 }
 
-/* Display modes (F11 cycles, --display picks):
- *   sharp  4:3, nearest neighbour -- what a 1993 monitor's geometry was
- *   pixel  the largest whole multiple of the frame, square pixels (16:10)
- *   crt    4:3 with scanlines: every source row lit in its middle and dimmed
- *          at its edges, as an electron beam drew it                       */
-static const char *display_names[] = { "sharp", "pixel", "crt" };
-static int display_mode;
-static uint32_t *crt_buf;
-static size_t crt_cap;
-
-static void crt_compose(int w, int h)
+/* GDI, when Direct3D is not there: a stretch, nearest or halftone, no extras */
+static void paint_gdi(HDC dc)
 {
-    if ((size_t)w * h > crt_cap) {
-        free(crt_buf);
-        crt_cap = (size_t)w * h;
-        crt_buf = malloc(crt_cap * 4);
-    }
-    for (int y = 0; y < h; y++) {
-        /* where in its source row this output line falls: 0..255 */
-        int pos = (int)(((int64_t)y * scan_rows * 256 / h) & 255);
-        int d = pos < 128 ? pos : 255 - pos;          /* 0 at the edges, 127 mid-row */
-        int gain = 150 + d * 106 / 127;               /* 150..256: edges ~60% bright */
-        const uint32_t *src = frame + (y * fh / h) * fw;
-        uint32_t *o = crt_buf + (size_t)y * w;
-        for (int x = 0; x < w; x++) {
-            uint32_t p = src[x * fw / w];
-            uint32_t r = ((p >> 16) & 255) * gain >> 8, g = ((p >> 8) & 255) * gain >> 8,
-                     b = (p & 255) * gain >> 8;
-            o[x] = 0xFF000000u | r << 16 | g << 8 | b;
-        }
-    }
-}
-
-static void paint(HDC dc)
-{
-    RECT r; GetClientRect(wnd, &r);
-    int cw = r.right, ch = r.bottom, w, h;
-    if (display_mode == 1) {                          /* pixel: whole multiples */
-        int k = cw / fw < ch / fh ? cw / fw : ch / fh;
-        if (k < 1) k = 1;
-        w = fw * k; h = fh * k;
-    } else {                                          /* sharp, crt: 4:3 */
-        w = cw; h = (int)(cw / frame_aspect);
-        if (h > ch) { h = ch; w = (int)(ch * frame_aspect); }
-    }
-    int x = (cw - w) / 2, y = (ch - h) / 2;
-    PatBlt(dc, 0, 0, cw, y, BLACKNESS); PatBlt(dc, 0, y + h, cw, ch - y - h, BLACKNESS);
-    PatBlt(dc, 0, 0, x, ch, BLACKNESS); PatBlt(dc, x + w, 0, cw - x - w, ch, BLACKNESS);
-    if (display_mode == 2 && h >= scan_rows * 2) {
-        crt_compose(w, h);
-        bmi.bmiHeader.biWidth = w; bmi.bmiHeader.biHeight = -h;
-        SetDIBitsToDevice(dc, x, y, w, h, 0, 0, 0, h, crt_buf, &bmi, DIB_RGB_COLORS);
-        return;
-    }
+    RECT c, r; GetClientRect(wnd, &c);
+    present_rect(c.right, c.bottom, fw, fh, frame_aspect, S.mode, &r);
+    int w = r.right - r.left, h = r.bottom - r.top;
+    PatBlt(dc, 0, 0, c.right, r.top, BLACKNESS); PatBlt(dc, 0, r.bottom, c.right, c.bottom - r.bottom, BLACKNESS);
+    PatBlt(dc, 0, 0, r.left, c.bottom, BLACKNESS); PatBlt(dc, r.right, 0, c.right - r.right, c.bottom, BLACKNESS);
     bmi.bmiHeader.biWidth = fw; bmi.bmiHeader.biHeight = -fh;
-    SetStretchBltMode(dc, COLORONCOLOR);
-    StretchDIBits(dc, x, y, w, h, 0, 0, fw, fh, frame, &bmi, DIB_RGB_COLORS, SRCCOPY);
+    SetStretchBltMode(dc, S.mode == PRESENT_SMOOTH ? HALFTONE : COLORONCOLOR);
+    SetBrushOrgEx(dc, 0, 0, NULL);
+    StretchDIBits(dc, r.left, r.top, w, h, 0, 0, fw, fh, frame, &bmi, DIB_RGB_COLORS, SRCCOPY);
+}
+
+static void paint(void)
+{
+    if (!g_opt.classic && present_window(wnd, frame, fw, fh, frame_aspect, &S)) return;
+    HDC dc = GetDC(wnd); paint_gdi(dc); ReleaseDC(wnd, dc);
+}
+
+enum { ID_MODE = 100, ID_LOOK = 120, ID_WHOLE = 130, ID_BARS_BLUR, ID_BARS_BLACK, ID_FULL,
+       ID_SOUND_SMOOTH, ID_SOUND_ORIG, ID_SHOT, ID_PAD };
+
+/* A change made in the window: shown, and remembered */
+static void command(int id)
+{
+    if (id >= ID_MODE && id < ID_MODE + PRESENT_MODES) S.mode = saved.mode = id - ID_MODE;
+    else if (id == ID_LOOK || id == ID_LOOK + 1) S.look = saved.look = id - ID_LOOK;
+    else if (id == ID_WHOLE) S.whole = saved.whole = !S.whole;
+    else if (id == ID_BARS_BLUR || id == ID_BARS_BLACK) S.bars = saved.bars = id == ID_BARS_BLUR;
+    else if (id == ID_FULL) { set_fullscreen(!is_full); saved_full = is_full; }
+    else if (id == ID_SOUND_SMOOTH || id == ID_SOUND_ORIG) g_audio_smooth = id == ID_SOUND_SMOOTH;
+    else if (id == ID_SHOT) screenshot_key();
+    else if (id == ID_PAD) ShellExecuteA(wnd, "open", pad_ini(), NULL, NULL, SW_SHOWNORMAL);
+    else return;
+    settings_save();
+}
+
+static void menu(int x, int y)
+{
+    static const char *const mode_labels[] = { "Sharp", "Smooth", "CRT", "Nearest (original pixels)", "Integer (whole multiples)" };
+    HMENU m = CreatePopupMenu(), sc = CreatePopupMenu(), look = CreatePopupMenu(),
+          bars = CreatePopupMenu(), snd = CreatePopupMenu();
+    for (int i = 0; i < PRESENT_MODES; i++)
+        AppendMenuA(sc, MF_STRING | (S.mode == i ? MF_CHECKED : 0), ID_MODE + i, mode_labels[i]);
+    AppendMenuA(look, MF_STRING | (!S.look ? MF_CHECKED : 0), ID_LOOK, "Natural");
+    AppendMenuA(look, MF_STRING | (S.look ? MF_CHECKED : 0), ID_LOOK + 1, "Vivid");
+    AppendMenuA(bars, MF_STRING | (S.bars ? MF_CHECKED : 0), ID_BARS_BLUR, "Blurred");
+    AppendMenuA(bars, MF_STRING | (!S.bars ? MF_CHECKED : 0), ID_BARS_BLACK, "Black");
+    AppendMenuA(snd, MF_STRING | (g_audio_smooth ? MF_CHECKED : 0), ID_SOUND_SMOOTH, "Smooth");
+    AppendMenuA(snd, MF_STRING | (!g_audio_smooth ? MF_CHECKED : 0), ID_SOUND_ORIG, "Original (stepped)");
+    AppendMenuA(m, MF_STRING | (S.whole ? MF_CHECKED : 0), ID_WHOLE, "Whole table\tF7");
+    AppendMenuA(m, MF_POPUP, (UINT_PTR)look, "Colour\tF9");
+    AppendMenuA(m, MF_POPUP, (UINT_PTR)sc, "Scaling\tF12");
+    AppendMenuA(m, MF_POPUP, (UINT_PTR)bars, "Beside the picture");
+    AppendMenuA(m, MF_STRING | (is_full ? MF_CHECKED : 0), ID_FULL, "Fullscreen\tF11");
+    AppendMenuA(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuA(m, MF_POPUP, (UINT_PTR)snd, "Sound");
+    AppendMenuA(m, MF_STRING, ID_PAD, "Controller mapping...");
+    AppendMenuA(m, MF_STRING, ID_SHOT, "Screenshot\tPrtSc");
+    uint64_t t = host_us();
+    int id = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, 0, wnd, NULL);
+    machine_paused(host_us() - t);                 /* the game stood still meanwhile */
+    DestroyMenu(m);                                /* and its submenus */
+    command(id);
 }
 
 static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
 {
     switch (m) {
     case WM_CLOSE: quit_req = 1; return 0;
-    case WM_PAINT: { PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); paint(dc); EndPaint(h, &ps); return 0; }
+    case WM_PAINT: { PAINTSTRUCT ps; BeginPaint(h, &ps); EndPaint(h, &ps); paint(); return 0; }
     case WM_ERASEBKGND: return 1;
     case WM_SYSKEYDOWN: case WM_KEYDOWN: case WM_SYSKEYUP: case WM_KEYUP: {
         int up = (m == WM_KEYUP || m == WM_SYSKEYUP);
-        if (wp == VK_RETURN && (lp & (1 << 29))) { if (!up) toggle_fullscreen(); return 0; }
+        if (wp == VK_RETURN && (lp & (1 << 29))) { if (!up) command(ID_FULL); return 0; }
         if (wp == VK_F4 && (lp & (1 << 29))) { quit_req = 1; return 0; }
-        if (wp == VK_F12) { if (!up) screenshot_key(); return 0; }
-        if (wp == VK_F11) { if (!up) { display_mode = (display_mode + 1) % 3; InvalidateRect(h, NULL, FALSE); } return 0; }
+        if (wp == VK_SNAPSHOT) { if (up) screenshot_key(); return 0; }   /* Windows sends PrtSc's up only */
+        if (wp == VK_F7 || (wp >= VK_F9 && wp <= VK_F12)) {
+            if (up) return 0;
+            if (wp == VK_F7) command(ID_WHOLE);
+            if (wp == VK_F9) command(ID_LOOK + !S.look);
+            if (wp == VK_F10) { RECT r; GetWindowRect(h, &r); menu(r.left + 40, r.top + 40); }
+            if (wp == VK_F11) command(ID_FULL);
+            if (wp == VK_F12) command(ID_MODE + (S.mode + 1) % PRESENT_MODES);
+            return 0;
+        }
         if (!up && (lp & (1 << 30))) return 0;      /* the game does its own repeat */
         int sc = (lp >> 16) & 0xFF;
         if (lp & (1 << 24)) kbd_scancode(0xE0);
@@ -285,31 +393,17 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     }
     case WM_SYSCHAR: return 0;                       /* no menu beep on Alt */
-
-    /* Mouse: click in the window to capture it (the game turns with it when
-     * MOUSE ENABLED is on in its options); leaving the window releases it.
-     * Raw input, so the motion is the device's, not the cursor's. */
-    case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
-        if (!captured) {
-            RAWINPUTDEVICE rid = { 1, 2, RIDEV_INPUTSINK, h };
-            RECT r; GetClientRect(h, &r); MapWindowPoints(h, NULL, (POINT *)&r, 2);
-            RegisterRawInputDevices(&rid, 1, sizeof rid);
-            ClipCursor(&r); ShowCursor(FALSE); captured = 1;
-            return 0;
-        }
-        /* fall through: a click while captured is a button for the game */
-    case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP:
-        if (captured) mouse_host(0, 0, (int)(((wp & MK_LBUTTON) ? 1 : 0) | ((wp & MK_RBUTTON) ? 2 : 0) | ((wp & MK_MBUTTON) ? 4 : 0)));
+    case WM_CONTEXTMENU: {                           /* the game has no mouse: right-click is ours */
+        POINT p = { (short)LOWORD(lp), (short)HIWORD(lp) };
+        if (p.x == -1 && p.y == -1) { RECT r; GetWindowRect(h, &r); p.x = r.left + 40; p.y = r.top + 40; }
+        menu(p.x, p.y);
         return 0;
-    case WM_INPUT: {
-        RAWINPUT ri; UINT sz = sizeof ri;
-        if (captured && GetRawInputData((HRAWINPUT)lp, RID_INPUT, &ri, &sz, sizeof(RAWINPUTHEADER)) != (UINT)-1
-            && ri.header.dwType == RIM_TYPEMOUSE && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
-            mouse_host(ri.data.mouse.lLastX, ri.data.mouse.lLastY, mouse_buttons_now());
-        break;
     }
-    case WM_KILLFOCUS:
-        if (captured) { ClipCursor(NULL); ShowCursor(TRUE); captured = 0; }
+    case WM_ACTIVATE:
+        if (LOWORD(wp) != WA_INACTIVE) pad_load();   /* controller.ini may have been edited */
+        break;
+    case WM_EXITSIZEMOVE:
+        if (!is_full && !IsZoomed(h)) { GetWindowRect(h, &win_rect); settings_save(); }
         break;
     }
     return DefWindowProcA(h, m, wp, lp);
@@ -351,60 +445,6 @@ static void wave_push(const int16_t *s, int frames)
 }
 #endif
 
-/* Gamepad: an XInput pad pressed as the keys the game already knows -- the
- * same map GOG's DOSBox setup ships (its controls.txt):
- *   LT / RT  left / right Shift (flippers)   LB / RB  Z / slash (nudge)
- *   A  Space (plunger, start, nudge up)      d-pad / stick  arrows
- *   Y  Y    B  N    Back  Esc                 X  Enter (scoreboard)     */
-typedef DWORD (WINAPI *XInputGetState_t)(DWORD, void *);
-
-static void pad_poll(void)
-{
-    static XInputGetState_t get;
-    static int tried;
-    static uint32_t held;
-    static const struct { uint32_t bit; uint8_t sc; uint8_t ext; } map[] = {
-        {1 << 0, 0x48, 1}, {1 << 1, 0x50, 1}, {1 << 2, 0x4B, 1}, {1 << 3, 0x4D, 1},
-        {1 << 4, 0x2A, 0}, {1 << 5, 0x36, 0}, {1 << 6, 0x2C, 0}, {1 << 7, 0x35, 0},
-        {1 << 8, 0x39, 0}, {1 << 9, 0x15, 0}, {1 << 10, 0x31, 0}, {1 << 11, 0x01, 0},
-        {1 << 12, 0x1C, 0}};
-    struct { DWORD packet; WORD buttons; BYTE lt, rt; SHORT lx, ly, rx, ry; } s;
-
-    if (!tried) {
-        HMODULE m;
-        tried = 1;
-        m = LoadLibraryA("xinput1_4.dll");
-        if (!m) m = LoadLibraryA("xinput9_1_0.dll");
-        if (m) get = (XInputGetState_t)GetProcAddress(m, "XInputGetState");
-    }
-    if (!get || get(0, &s) != ERROR_SUCCESS) return;
-
-    uint32_t now = 0;
-    WORD b = s.buttons;
-    if ((b & 0x0001) || s.ly >  12000) now |= 1 << 0;   /* up */
-    if ((b & 0x0002) || s.ly < -12000) now |= 1 << 1;   /* down */
-    if ((b & 0x0004) || s.lx < -12000) now |= 1 << 2;   /* left */
-    if ((b & 0x0008) || s.lx >  12000) now |= 1 << 3;   /* right */
-    if (s.lt > 64) now |= 1 << 4;
-    if (s.rt > 64) now |= 1 << 5;
-    if (b & 0x0100) now |= 1 << 6;                       /* LB */
-    if (b & 0x0200) now |= 1 << 7;                       /* RB */
-    if (b & 0x1000) now |= 1 << 8;                       /* A */
-    if (b & 0x8000) now |= 1 << 9;                       /* Y */
-    if (b & 0x2000) now |= 1 << 10;                      /* B */
-    if (b & (0x0020 | 0x0010)) now |= 1 << 11;           /* Back, Start */
-    if (b & 0x4000) now |= 1 << 12;                      /* X */
-
-    for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++) {
-        uint32_t m = map[i].bit;
-        if ((now ^ held) & m) {
-            if (map[i].ext) kbd_scancode(0xE0);
-            kbd_scancode((uint8_t)(map[i].sc | ((now & m) ? 0 : 0x80)));
-        }
-    }
-    held = now;
-}
-
 void host_audio(const int16_t *s, int frames)
 {
     if (rec_audio) { fwrite(s, 4, frames, rec_audio); rec_samples += frames; }
@@ -420,24 +460,31 @@ void host_init(void)
     if (g_opt.record) rec_open();
     if (g_opt.wav && (wav_out = fopen(g_opt.wav, "wb")) != NULL) wav_header(wav_out, 0);
 #ifdef _WIN32
-    if (g_opt.headless) return;
+    bmi.bmiHeader.biSize = sizeof bmi.bmiHeader;
+    bmi.bmiHeader.biPlanes = 1; bmi.bmiHeader.biBitCount = 32; bmi.bmiHeader.biCompression = BI_RGB;
+    if (g_opt.headless) { settings_args(); return; }
+    settings_load();
+    settings_args();
+    pad_load();
     WNDCLASSA wc = {0};
     wc.lpfnWndProc = wndproc; wc.hInstance = GetModuleHandle(NULL);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW); wc.lpszClassName = "epicpinball";
     wc.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(1));
     RegisterClassA(&wc);
-    int s = g_opt.scale ? g_opt.scale : 3;
-    RECT r = { 0, 0, 320 * s, 240 * s };
-    AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-    wnd = CreateWindowA("epicpinball", "Epic Pinball",
-                        WS_OVERLAPPEDWINDOW | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
-                        r.right - r.left, r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
-    bmi.bmiHeader.biSize = sizeof bmi.bmiHeader;
-    bmi.bmiHeader.biPlanes = 1; bmi.bmiHeader.biBitCount = 32; bmi.bmiHeader.biCompression = BI_RGB;
-    if (g_opt.fullscreen) toggle_fullscreen();
-    for (int i = 0; i < 3; i++)
-        if (g_opt.display && !strcmp(g_opt.display, display_names[i])) display_mode = i;
+    int x = win_rect.left, y = win_rect.top, w = win_rect.right - win_rect.left, h = win_rect.bottom - win_rect.top;
+    if (g_opt.window || w <= 0) {                  /* --window N, or no place remembered */
+        int s = g_opt.window ? g_opt.window : 3;
+        RECT r = { 0, 0, 320 * s, 240 * s };
+        AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+        x = y = CW_USEDEFAULT; w = r.right - r.left; h = r.bottom - r.top;
+    }
+    wnd = CreateWindowA("epicpinball", "Epic Pinball", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                        x, y, w, h, NULL, NULL, wc.hInstance, NULL);
+    GetWindowRect(wnd, &win_rect);
+    if (g_opt.fullscreen) set_fullscreen(1);
     if (!g_opt.mute) wave_open();
+#else
+    settings_args();
 #endif
 }
 
@@ -464,26 +511,44 @@ void host_frame(void)
     while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageA(&msg); }
     if (GetForegroundWindow() == wnd) pad_poll();
     if (quit_req) dos_exit(0);
-    compose();
-    HDC dc = GetDC(wnd); paint(dc); ReleaseDC(wnd, dc);
+    compose_view();
+    paint();
 #endif
 }
 
-/* The last thing on screen, as a BMP -- a run nobody watched still says where
+static void write_bmp(const char *path, const uint32_t *px, int w, int h)
+{
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    uint32_t sz = 54 + w * h * 4, off = 54, hs = 40, zero = 0, img = w * h * 4;
+    int32_t bw = w, bh = -h; uint16_t planes = 1, bpp = 32;
+    fwrite("BM", 1, 2, f); fwrite(&sz, 4, 1, f); fwrite(&zero, 4, 1, f); fwrite(&off, 4, 1, f);
+    fwrite(&hs, 4, 1, f); fwrite(&bw, 4, 1, f); fwrite(&bh, 4, 1, f); fwrite(&planes, 2, 1, f);
+    fwrite(&bpp, 2, 1, f); fwrite(&zero, 4, 1, f); fwrite(&img, 4, 1, f);
+    fwrite(&zero, 4, 1, f); fwrite(&zero, 4, 1, f); fwrite(&zero, 4, 1, f); fwrite(&zero, 4, 1, f);
+    fwrite(px, 4, (size_t)w * h, f);
+    fclose(f);
+}
+
+/* The picture as a BMP: the game's own frame, or with --present the
+ * presenter's output at that size -- a run nobody watched still says where
  * it got to. */
 void host_snapshot(const char *path)
 {
-    compose();
-    FILE *f = fopen(path, "wb");
-    if (!f) return;
-    uint32_t sz = 54 + fw * fh * 4, off = 54, hs = 40, zero = 0, img = fw * fh * 4;
-    int32_t w = fw, h = -fh; uint16_t planes = 1, bpp = 32;
-    fwrite("BM", 1, 2, f); fwrite(&sz, 4, 1, f); fwrite(&zero, 4, 1, f); fwrite(&off, 4, 1, f);
-    fwrite(&hs, 4, 1, f); fwrite(&w, 4, 1, f); fwrite(&h, 4, 1, f); fwrite(&planes, 2, 1, f);
-    fwrite(&bpp, 2, 1, f); fwrite(&zero, 4, 1, f); fwrite(&img, 4, 1, f);
-    fwrite(&zero, 4, 1, f); fwrite(&zero, 4, 1, f); fwrite(&zero, 4, 1, f); fwrite(&zero, 4, 1, f);
-    fwrite(frame, 4, fw * fh, f);
-    fclose(f);
+    compose_view();
+#ifdef _WIN32
+    if (g_opt.present_w > 0) {
+        size_t n = (size_t)g_opt.present_w * g_opt.present_h;
+        uint32_t *out = malloc(n * 4);
+        if (out && present_offscreen(frame, fw, fh, frame_aspect, &S, g_opt.present_w, g_opt.present_h, out))
+            write_bmp(path, out, g_opt.present_w, g_opt.present_h);
+        else
+            fprintf(stderr, "[present] %s: no Direct3D 11, not written\n", path);
+        free(out);
+        return;
+    }
+#endif
+    write_bmp(path, frame, fw, fh);
 }
 
 void host_shutdown(void)
@@ -492,6 +557,6 @@ void host_shutdown(void)
     if (wav_out) { wav_header(wav_out, (uint32_t)wav_samples); fclose(wav_out); wav_out = NULL; }
 #ifdef _WIN32
     if (wout) { waveOutReset(wout); waveOutClose(wout); }
-    if (wnd) DestroyWindow(wnd);
+    if (wnd) { settings_save(); DestroyWindow(wnd); }
 #endif
 }

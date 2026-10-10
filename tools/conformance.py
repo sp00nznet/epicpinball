@@ -86,11 +86,12 @@ def table_keys(n):
     return ','.join(keys), p, end
 
 
-def run(out, seconds, keys, shots):
+def run(out, seconds, keys, shots, extra=()):
     save = os.path.join(out, 'save')
     os.makedirs(save, exist_ok=True)
     cmd = [EXE, '--headless', '--trace', '--seconds', str(seconds), '--save', save,
            '--data', DATA, '--wav', os.path.join(out, 'audio.wav')]
+    cmd += list(extra)
     if keys:
         cmd += ['--keys', keys]
     if shots:
@@ -147,6 +148,40 @@ def scenario_table(out, n):
     return checks
 
 
+def scenario_remaster(out, n, plain):
+    """The remaster's picture, on a table with each scoreboard height (1-8: 20
+    rows, 9-13: 30). Whole table: the page the screen scrolls over, drawn from
+    VRAM -- the frame the game shows at the same moment must be a band of it --
+    with the scoreboard under it. The presenter (Direct3D 11, offscreen):
+    that picture letterboxed into 1280x720 with the blur beside it."""
+    keys, play, end = table_keys(n)
+    t = end - 500                      # scenario_table's frame `b`, same script: the same moment
+    w_dir, p_dir = os.path.join(out, 'whole'), os.path.join(out, 'present')
+    for d in (w_dir, p_dir):
+        os.makedirs(d, exist_ok=True)
+    run(w_dir, end / 1000, keys, {'w': t}, ['--whole-table'])
+    run(p_dir, end / 1000, keys, {'p': t}, ['--whole-table', '--present', '1280x720'])
+    get = lambda d, k: read_bmp(os.path.join(d, k + '.bmp')) if os.path.exists(os.path.join(d, k + '.bmp')) else None
+    whole, shown, pres = get(w_dir, 'w'), plain, get(p_dir, 'p')
+    band = False
+    if whole and shown and whole[0] == 320 and 400 <= whole[1] <= 440:
+        view = rows(shown, 0, 200)                             # playfield on every table
+        band = any(rows(whole, k, k + 200) == view for k in range(0, whole[1] - 200 - 19 + 1))
+    dmd = whole is not None and bright(rows(whole, whole[1] - 19, whole[1]), 60) > 40
+    pic = bars = False
+    if pres and whole and pres[0] == 1280 and pres[1] == 720:
+        pw = round(720 * 320 / whole[1])                       # square pixels: the page's own shape
+        x0 = (1280 - pw) // 2
+        mid = [pres[2][y * 1280 + x] for y in range(0, 720, 8) for x in range(x0 + 4, x0 + pw - 4, 8)]
+        side = [pres[2][y * 1280 + x] for y in range(0, 720, 8) for x in range(0, x0 - 4, 8)]
+        pic = len(set(mid)) >= 64
+        bars = bright(side, 8) > len(side) // 2 and bright(side, 160) == 0     # lit, but dark
+    return [(f'remaster table {n}: whole table is the page the screen scrolls over', band),
+            (f'remaster table {n}: scoreboard under the whole table', dmd),
+            (f'remaster table {n}: presenter letterboxes it at 1280x720', pic),
+            (f'remaster table {n}: a dark blur of the picture beside it', bars)]
+
+
 def scenario_determinism(out):
     """Headless time is deterministic: the same script twice, the same frame."""
     keys, play, end = table_keys(1)
@@ -188,6 +223,9 @@ def main():
         for n in range(1, TABLES + 1):
             results += scenario_table(sub(f'table{n}'), n)
             print(f'  table {n} done', file=sys.stderr)
+        for n in (1, 9):
+            b = os.path.join(tmp, f'table{n}', 'b.bmp')
+            results += scenario_remaster(sub(f'remaster{n}'), n, read_bmp(b) if os.path.exists(b) else None)
         results += scenario_determinism(sub('det'))
     for name, ok in results:
         print(f'{"PASS" if ok else "FAIL"}  {name}')

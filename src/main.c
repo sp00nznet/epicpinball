@@ -13,9 +13,16 @@
  *   --seconds N       quit after N seconds of emulated time
  *   --keys LIST       scripted input: "ms:KEY[+holdms],..." e.g. "4000:SPACE,6000:LSHIFT+300"
  *   --mute            silence
- *   --scale N         window size, multiples of 320x240 (default 3)
- *   --fullscreen      start fullscreen (Alt+Enter toggles)
- *   --display MODE    sharp (4:3, default), pixel (whole multiples) or crt (F11 cycles)
+ *   --window N        window size, multiples of 320x240 (default 3, or where it was)
+ *   --fullscreen      start fullscreen (F11, Alt+Enter toggle)
+ *   --scale MODE      sharp, smooth, crt, nearest or integer (F12 cycles)
+ *   --look MODE       natural or vivid (F9)
+ *   --whole-table     the whole table, no scrolling (F7)
+ *   --bars MODE       beside the picture: blur or black
+ *   --classic         the game's own picture: nearest, no extras, GDI
+ *   --present WxH     --shot-at frames through the presenter at that size
+ * Settings changed in the window are kept in epicpinball.ini in the save
+ * folder; the options above win over it, and headless runs read only them.
  *   --trace           log DOS calls to stderr
  *   --shot FILE.bmp   write the last frame at exit
  *   --shot-at LIST    frames at emulated times: "ms:file.bmp,..."
@@ -72,10 +79,15 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--wav") && v) { g_opt.wav = v; i++; }
         else if (!strcmp(a, "--mute")) g_opt.mute = 1;
         else if (!strcmp(a, "--trace")) g_opt.trace = 1;
-        else if (!strcmp(a, "--scale") && v) { g_opt.scale = atoi(v); i++; }
+        else if (!strcmp(a, "--window") && v) { g_opt.window = atoi(v); i++; }
+        else if (!strcmp(a, "--scale") && v) { g_opt.scale = v; i++; }
+        else if (!strcmp(a, "--look") && v) { g_opt.look = v; i++; }
+        else if (!strcmp(a, "--bars") && v) { g_opt.bars = v; i++; }
+        else if (!strcmp(a, "--whole-table")) g_opt.whole = 1;
+        else if (!strcmp(a, "--classic")) g_opt.classic = 1;
+        else if (!strcmp(a, "--present") && v) { sscanf(v, "%dx%d", &g_opt.present_w, &g_opt.present_h); i++; }
         else if (!strcmp(a, "--fullscreen")) g_opt.fullscreen = 1;
         else if (!strcmp(a, "--realtime")) g_opt.realtime = 1;
-        else if (!strcmp(a, "--display") && v) { g_opt.display = v; i++; }
         else if (!strcmp(a, "--shot") && v) { shot = v; i++; }
         else if (!strcmp(a, "--")) {
             for (i++; i < argc; i++) {

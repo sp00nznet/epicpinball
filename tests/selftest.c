@@ -65,13 +65,30 @@ static void test_split_screen(void)
     assert(frame[221 * 320] == 0xFFFF0000u);             /* row 221: address 0 */
 }
 
-static void test_sb16_stereo(void)
+static void test_whole_table(void)
 {
-    /* MASI on a Sound Blaster 16: DSP 4.05, rate 22050 by 41h, then C6h mode
-     * 20h -- 8-bit stereo unsigned auto-init -- on DMA channel 1 */
-    static uint8_t buf[8] = { 0x80 + 64, 0x80 - 64, 0x80 + 64, 0x80 - 64, 0x80 + 64, 0x80 - 64, 0x80 + 64, 0x80 - 64 };
-    memcpy(g_cpu.mem + 0x12000, buf, sizeof buf);
-    audio_init();
+    /* the remaster's whole table: the front page from its first row (1600h
+     * past the 19 display rows the split shows, as tables 1-8 keep 20), then
+     * the display under it -- not only the 221 rows the CRTC scans out */
+    static uint32_t frame[320 * 480]; int w, h;
+    out(0x3D4, 0x0C); out(0x3D5, 0x84);                  /* start 8480h: page 2 (8340h), 40 rows down */
+    out(0x3D4, 0x0D); out(0x3D5, 0x80);
+    out(0x3C4, 2); out(0x3C5, 0x01);
+    mem_write8(&g_cpu, 0xA000, 0x8340, 7);               /* page 2's first pixel; a row early is black */
+    vga_dac_set(7, 0, 0, 63);
+    assert(vga_compose_table(frame, &w, &h));
+    assert(w == 320 && h == 399 + 19);                   /* page ends at 64K; 19 display rows */
+    assert(frame[0] == 0xFF0000FFu);                     /* row 0: the page's first row */
+    assert(frame[399 * 320] == 0xFFFF0000u);             /* then address 0: the display */
+    vga_set_mode(0x13);                                  /* not a table: nothing */
+    assert(!vga_compose_table(frame, &w, &h));
+}
+
+/* 8 bytes at 12000h played by the DSP at 22050 Hz, auto-init, on DMA channel 1:
+ * mode 20h is 8-bit stereo unsigned, 00h mono. 2 ms of it into heard[]. */
+static void sb_play(const uint8_t *buf, uint8_t mode)
+{
+    memcpy(g_cpu.mem + 0x12000, buf, 8);
     out(0x226, 1); out(0x226, 0);
     out(0x22C, 0xD1);                                    /* speaker on */
     out(0x0A, 0x05);                                     /* mask ch1 */
@@ -81,11 +98,37 @@ static void test_sb16_stereo(void)
     out(0x0B, 0x59);                                     /* auto-init, read, ch1 */
     out(0x0A, 0x01);                                     /* unmask */
     out(0x22C, 0x41); out(0x22C, 0x56); out(0x22C, 0x22);
-    out(0x22C, 0xC6); out(0x22C, 0x20); out(0x22C, 7); out(0x22C, 0);
-    /* render 2 ms; every frame must have the left channel high and the right
-     * low -- played as mono, the two would alternate in one channel instead */
+    out(0x22C, 0xC6); out(0x22C, mode); out(0x22C, 7); out(0x22C, 0);
+    static uint64_t now;                                 /* audio_advance takes the time, not a step */
     nheard = 0;
-    audio_advance((uint64_t)(PIT_HZ / 500));
+    now += (uint64_t)(PIT_HZ / 500);
+    audio_advance(now);
+}
+
+static void test_smooth_sound(void)
+{
+    /* 22 kHz into 44.1: smooth puts a sample halfway between each two of the
+     * DSP's; original holds each, so only the two levels are ever heard */
+    static const uint8_t saw[8] = { 0x80, 0xC0, 0x80, 0xC0, 0x80, 0xC0, 0x80, 0xC0 };
+    for (int smooth = 1; smooth >= 0; smooth--) {
+        int mid = 0;
+        g_audio_smooth = smooth;
+        sb_play(saw, 0x00);
+        for (int i = 0; i < nheard; i++) mid += heard[i * 2] > 1000 && heard[i * 2] < 5000;
+        assert(smooth ? mid > 20 : mid == 0);
+    }
+    g_audio_smooth = 1;
+}
+
+static void test_sb16_stereo(void)
+{
+    /* MASI on a Sound Blaster 16: DSP 4.05, rate 22050 by 41h, then C6h mode
+     * 20h -- 8-bit stereo unsigned auto-init. Every frame must have the left
+     * channel high and the right low -- played as mono, the two would
+     * alternate in one channel instead. */
+    static const uint8_t buf[8] = { 0x80 + 64, 0x80 - 64, 0x80 + 64, 0x80 - 64, 0x80 + 64, 0x80 - 64, 0x80 + 64, 0x80 - 64 };
+    audio_init();
+    sb_play(buf, 0x20);
     int got = 0;
     for (int i = 0; i < nheard; i++)
         if (heard[i * 2] || heard[i * 2 + 1]) { assert(heard[i * 2] > 0 && heard[i * 2 + 1] < 0); got++; }
@@ -111,6 +154,8 @@ int main(void)
     g_cpu.mem = (uint8_t *)calloc(1, MEM_SIZE);
     test_split_screen();
     test_sb16_stereo();
+    test_smooth_sound();
+    test_whole_table();
     test_images();
     printf("selftest: ok\n");
     return 0;

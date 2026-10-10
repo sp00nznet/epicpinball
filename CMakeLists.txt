@@ -35,7 +35,7 @@ if(MSVC)
 endif()
 
 set(GEN "${CMAKE_SOURCE_DIR}/work/gen")
-set(RUNTIME src/main.c src/machine.c src/dos.c src/images.c src/vga.c src/audio.c src/host.c)
+set(RUNTIME src/main.c src/machine.c src/dos.c src/images.c src/vga.c src/audio.c src/host.c src/present.c src/pad.c)
 
 if(EXISTS "${GEN}/images_list.c")
     # Each image is its own library: its <image>.h defines SEG_ constants that
@@ -60,7 +60,7 @@ if(EXISTS "${GEN}/images_list.c")
     endforeach()
     add_executable(epicpinball ${RUNTIME} "${GEN}/images_list.c" ${image_libs})
     target_include_directories(epicpinball PRIVATE src "${GEN}" "${PCRECOMP_HOME}/runtime")
-    target_link_libraries(epicpinball PRIVATE user32 gdi32 winmm)
+    target_link_libraries(epicpinball PRIVATE user32 gdi32 winmm shell32 d3d11 dxgi dxguid)
     if(EPIC_TRACE)
         target_compile_definitions(epicpinball PRIVATE RECOMP_TRACE EPIC_DEBUG)
         target_compile_options(epicpinball PRIVATE /Zi /Oy-)

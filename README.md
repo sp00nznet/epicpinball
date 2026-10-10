@@ -29,7 +29,7 @@ ships, the output never does.
 ## Status
 
 **v0.1.0 — alpha. The menus and all thirteen tables boot and play; the
-conformance harness passes 125/125.**
+conformance harness passes 133/133.**
 
 | | |
 |---|---|
@@ -40,17 +40,39 @@ conformance harness passes 125/125.**
 | Dot-matrix scoreboard (the VGA split screen) | ✅ |
 | Music and effects: Sound Blaster 16, 8-bit stereo, 22 kHz | ✅ measured, see below |
 | Windowed play at real speed | ✅ (seen on a virtual monitor) |
-| Gamepad (XInput, mapped like GOG's DOSBox setup) | implemented, untested |
+| Gamepad (XInput, `controller.ini`, GOG's DOSBox mapping by default) | implemented, untested on a real pad |
 | `SETUP.EXE` (the sound card menu) | not lifted: its start-up check is answered, and GOG's `SOUNDCRD.INF` (Sound Blaster 16) is used as shipped |
 | The `DEMO\` folder's shareware version | not supported |
 | A full game, start to final ball, with hands on a keyboard | not yet |
-| **Conformance** ([docs](docs/conformance.md)) | **125/125** |
+| **Conformance** ([docs](docs/conformance.md)) | **133/133** |
 
 Everything marked ✅ was seen working in scripted headless runs, which the
 conformance harness repeats. The sound was checked by measurement — a stereo
 stream whose two channels are each smooth signals with a music-shaped
 spectrum — not yet by ear. Nobody has played a long session yet: treat this as
 an alpha.
+
+## What the remaster adds
+
+The game plays as it shipped; everything here is around it, optional, and
+off with `--classic`. Details in [docs/remaster.md](docs/remaster.md).
+
+![The whole of Super Android at once, in a 16:9 window](docs/screenshots/whole-table.png)
+
+- **The whole table** (F7): the full playfield on screen at once, no
+  scrolling, with the scoreboard under it. Not redrawn — the game keeps the
+  entire table in video memory and only ever showed part of it; this shows
+  the rest. Made for a tall window or a monitor turned on its side.
+- **Its own window**, drawn with Direct3D 11: resizable, borderless
+  fullscreen (F11, Alt+Enter), remembered where you left it.
+- **Scaling** (F12): sharp-bilinear (default), smooth, CRT, nearest, integer.
+  **Vivid** colour (F9). A dark blur of the picture beside it instead of
+  black bars.
+- **A settings menu** on right-click or F10; choices are kept in
+  `saves\epicpinball.ini`.
+- **Smooth sound**: the 22 kHz Sound Blaster stream interpolated up to
+  44.1 kHz instead of held in steps (Settings → Sound for the original).
+- **Xbox controller** mapped by `saves\controller.ini`.
 
 ## Screenshots
 
@@ -177,22 +199,29 @@ epicpinball [options] [-- arguments for PINBALL.EXE]
 | **Enter** | show or hide the scoreboard |
 | **↑ ↓** | menus; look up and down the table |
 | **Esc** | back, quit |
-| **F11** | display: sharp 4:3 → pixel-perfect → CRT scanlines |
-| **F12** | screenshot to `screenshots\` |
-| **Alt+Enter** | fullscreen |
+| **F7** | whole table / scrolling view |
+| **F9** | colour: natural / vivid |
+| **F10**, right-click | settings menu |
+| **F11**, **Alt+Enter** | fullscreen |
+| **F12** | scaling: sharp → smooth → CRT → nearest → integer |
+| **PrtSc** | screenshot to `screenshots\` |
 
-A pad: triggers flip, bumpers nudge, A plunges, d-pad for menus.
+A pad: triggers flip, bumpers nudge, A plunges, d-pad for menus; remap it in
+`saves\controller.ini`.
 
 | Option | |
 |---|---|
 | `--data DIR` | the game's files (default `original`) |
 | `--save DIR` | where `CONFIG.PIN` and high scores go (default `saves`); the install is never written to |
-| `--scale N` | window size, multiples of 320×240 (default 3) |
-| `--fullscreen`, `--display sharp\|pixel\|crt`, `--mute` | |
+| `--window N` | window size, multiples of 320×240 (default 3, or where you left it) |
+| `--scale sharp\|smooth\|crt\|nearest\|integer`, `--look natural\|vivid`, `--bars blur\|black`, `--whole-table`, `--fullscreen` | this run's picture; wins over `epicpinball.ini` and is not saved to it |
+| `--classic` | the game's own picture: nearest, no extras |
+| `--mute` | |
 | `--headless` | no window, no audio device, deterministic time — works over RDP |
 | `--record out.mp4` | video and audio through ffmpeg (with `--headless`: unattended) |
 | `--keys "ms:KEY[+holdms],..."` | scripted input at emulated times, e.g. `"12500:ENTER,14500:ENTER"` |
 | `--seconds N`, `--shot-at "ms:file.bmp,..."`, `--wav out.wav`, `--trace` | testing |
+| `--present WxH` | `--shot-at` frames through the presenter at that size, headless |
 
 ```powershell
 # a minute of Super Android, recorded without a window

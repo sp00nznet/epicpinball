@@ -5,7 +5,7 @@ py tools/conformance.py            # needs your game data in original/ and a bui
 py tools/conformance.py --update   # record the current count as the new baseline
 ```
 
-Current figure (2026-10-10): **125/125.** The whole run takes about 25 seconds:
+Current figure (2026-10-10): **133/133.** The whole run takes about 25 seconds:
 headless time is deterministic and runs far faster than real time
 ([architecture](architecture.md#time)). Frames, audio and logs of the last run
 stay in `work/conformance/` to explain any FAIL.
@@ -30,6 +30,10 @@ GAME, then SPACE to start, the plunger every few seconds, and both flippers.
 | table *n*: the view moves in play | under 2% of the playfield changed between 12 s into play and the end — no ball, no scrolling |
 | table *n*: SB16 stereo stream started | the SB driver never started an SB16 stereo auto-init transfer |
 | table *n*: audio | the WAV the run wrote is near silent |
+| remaster table 1, 9: whole table is the page the screen scrolls over | `--whole-table`'s frame does not contain, row for row, the playfield the game showed at the same moment: the wrong page, or offset ([remaster](remaster.md#the-whole-table)) |
+| remaster table 1, 9: scoreboard under the whole table | the whole-table frame's last rows are dark |
+| remaster table 1, 9: presenter letterboxes it at 1280x720 | `--present 1280x720` did not draw the picture where a square-pixel table belongs (no Direct3D 11, or the shader is wrong) |
+| remaster table 1, 9: a dark blur of the picture beside it | the bars are black, or as bright as the picture |
 | determinism: two runs, identical frames | the same script twice gave different frames — time leaked into the run |
 
 ## Without the game

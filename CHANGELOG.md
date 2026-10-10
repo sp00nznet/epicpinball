@@ -6,6 +6,34 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- The remaster (docs/remaster.md), all optional and off with `--classic`:
+  - **The whole table** (F7): `vga_compose_table` draws the page of video
+    memory the game scrolls over -- the full table, ball included -- with the
+    scoreboard under it, from the CRTC registers, for every table.
+  - `src/present.c`: a Direct3D 11 presenter, from the Gunman Chronicles
+    recomp: sharp-bilinear, smooth, CRT, nearest, integer (F12), a vivid look
+    (F9), a dark blur of the picture beside it (from Red Alert 2), GDI if
+    Direct3D will not start. `--present WxH` renders `--shot-at` frames
+    through it headless.
+  - A settings menu (right-click, F10) and `saves\epicpinball.ini`, which
+    keeps the choices and the window's place; F11 and Alt+Enter fullscreen,
+    PrtSc screenshots. Command-line choices win for the run and are not saved.
+  - Smooth sound: the DSP's 22 kHz samples interpolated to 44.1 kHz (Settings
+    → Sound → Original for the held steps).
+  - `src/pad.c`: the Xbox controller mapped by `saves\controller.ini`, GOG's
+    mapping by default.
+- Conformance: the whole table and the presenter on a table with each
+  scoreboard height; selftest: the page arithmetic and the interpolation.
+
+### Changed
+- `--scale` is now the scaling mode; the window size is `--window N`.
+  `--display` is gone (F12 and `--scale` replace it).
+
+### Removed
+- The INT 33h mouse driver and mouse capture, left from Blake Stone: the game
+  never asks for a mouse. Right-click is the settings menu.
+
 ### Changed
 - Pinned to pcrecomp 1dfdaef, now that the toolkit changes this needs are merged
   (pcrecomp#74, #75).

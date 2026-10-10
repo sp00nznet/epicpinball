@@ -783,31 +783,6 @@ void bios_int16(CPU *c)
     }
 }
 
-/* ---- INT 33h mouse ----------------------------------------------------------- */
-
-static int mx = 320, my = 100, mbuttons, mick_x, mick_y, mouse_on;
-
-void mouse_host(int dx, int dy, int buttons)
-{
-    mick_x += dx; mick_y += dy; mbuttons = buttons;
-    mx += dx; my += dy;
-    if (mx < 0) mx = 0; if (mx > 639) mx = 639;
-    if (my < 0) my = 0; if (my > 199) my = 199;
-}
-
-void mouse_int33(CPU *c)
-{
-    switch (c->ax) {
-    case 0x00: mouse_on = !g_opt.headless; c->ax = mouse_on ? 0xFFFF : 0; c->bx = 2; break;
-    case 0x03: c->bx = (uint16_t)mbuttons; c->cx = (uint16_t)mx; c->dx = (uint16_t)my; break;
-    case 0x04: mx = c->cx; my = c->dx; break;
-    case 0x05: case 0x06: c->ax = (uint16_t)mbuttons; c->bx = 0; break;
-    case 0x0B: c->cx = (uint16_t)mick_x; c->dx = (uint16_t)mick_y; mick_x = mick_y = 0; break;
-    case 0x24: c->bx = 0x0626; c->cx = 0x0400; break;
-    default: break;
-    }
-}
-
 /* ---- everything else ------------------------------------------------------------ */
 
 static const uint8_t scan_ascii[0x3A] = {
@@ -851,7 +826,7 @@ int bios_builtin(CPU *c, unsigned n)
     case 0x2F:                                      /* no XMS, no Windows */
         if (c->ax == 0x4300 || c->ax == 0x1600) c->al = 0;
         return 1;
-    case 0x33: mouse_int33(c); return 1;
+    case 0x33: return 1;           /* no mouse driver: a reset leaves AX 0, "none" */
     case 0x67: c->ah = 0x80; return 1;              /* no EMM loaded */
     }
     if (n < 8 || (n >= 0x70 && n < 0x78) || (n >= 0x0A && n < 0x10)) return 1;   /* spurious IRQs */

@@ -85,11 +85,13 @@ static struct {
     int playing, autoinit, silence;
     int stereo, is_signed;                /* SB16 mode byte (C0h-CFh), or SB Pro mixer 0Eh */
     uint32_t len, pos;                    /* the DSP's block, in bytes */
-    double phase; int cur, cur_r;
+    double phase; int cur, cur_r, prev, prev_r;
     int irq;
     uint8_t mixer_i, mixer[256];
     uint8_t test;
-} sb = { .rate = 11025, .cur = 128, .cur_r = 128 };
+} sb = { .rate = 11025, .cur = 128, .cur_r = 128, .prev = 128, .prev_r = 128 };
+
+int g_audio_smooth = 1;
 
 int  sb_irq_pending(void) { return sb.irq; }
 int  sb_irq_line(void) { return 7; }   /* GOG's SOUNDCRD.INF is set up for IRQ 7 */
@@ -165,7 +167,9 @@ static int sb_byte(int *v)
     return 1;
 }
 
-/* the DSP's output for one host frame: left and right */
+/* the DSP's output for one host frame: left and right. The DSP runs at 22 kHz
+ * and the host at 44.1: smooth draws a line between its samples, otherwise
+ * each is held -- steps the card's analogue output filtered away. */
 static void sb_sample(int *l, int *r)
 {
     *l = *r = 0;
@@ -173,13 +177,15 @@ static void sb_sample(int *l, int *r)
     sb.phase += (double)sb.rate / AUDIO_RATE;
     while (sb.phase >= 1.0 && sb.playing) {
         sb.phase -= 1.0;
+        sb.prev = sb.cur; sb.prev_r = sb.cur_r;
         if (!sb_byte(&sb.cur)) break;
         sb.cur_r = sb.cur;
         if (sb.stereo && !sb_byte(&sb.cur_r)) break;
     }
     if (!sb.speaker) return;
-    *l = (sb.cur - 128) * 96;
-    *r = (sb.cur_r - 128) * 96;
+    double f = g_audio_smooth && sb.playing ? sb.phase : 1.0;
+    *l = (int)((sb.prev + (sb.cur - sb.prev) * f - 128) * 96);
+    *r = (int)((sb.prev_r + (sb.cur_r - sb.prev_r) * f - 128) * 96);
 }
 
 /* ---- PC speaker --------------------------------------------------------- */

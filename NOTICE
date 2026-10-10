@@ -3,7 +3,10 @@ Copyright (c) 2026 sp00nz. MIT licensed; see LICENSE.
 
 This repository carries no third-party code. The DOS machine in src/ began as
 a copy of the one in the Blake Stone recomp (https://github.com/sp00nznet/blakestone),
-by the same author under the same licence.
+by the same author under the same licence. The presenter (src/present.c)
+began as the Gunman Chronicles recomp's (https://github.com/sp00nznet/gunman),
+and the settings menu and blurred bars follow the Red Alert 2 recomp's
+(https://github.com/sp00nznet/redalert2-recomp): same author, same licence.
 
 It builds against, but does not include, the pcrecomp toolkit (MIT):
 https://github.com/sp00nznet/pcrecomp
