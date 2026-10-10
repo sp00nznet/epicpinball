@@ -116,7 +116,7 @@ is enough), Git. ffmpeg is optional (only `--record` needs it).
 
    ```powershell
    git clone https://github.com/sp00nznet/pcrecomp ..\pcrecomp
-   git -C ..\pcrecomp checkout feat/decode16-addr32
+   git -C ..\pcrecomp checkout 1dfdaef
    $env:PCRECOMP_HOME = (Resolve-Path ..\pcrecomp)
    ```
 
@@ -218,8 +218,8 @@ A trace build (`cmake -B build-dbg -DEPIC_TRACE=ON`, then
 functions entered and adds a watchdog that names the generated C line the game
 is stuck on; [lifting](docs/lifting.md#debugging-kit) lists the rest.
 
-This needs pcrecomp's 32-bit-addressing support in its 16-bit decoder and
-lifter (branch `feat/decode16-addr32`, until it is merged).
+This needs pcrecomp 1dfdaef or later: 32-bit addressing in the 16-bit decoder
+and lifter (pcrecomp#74) and `jmp reg` tables lifted as switches (pcrecomp#75).
 
 **The generated source is not distributed.** Everything lifted from the game —
 `work/gen/`, the layout and entry lists — is produced on your machine from your

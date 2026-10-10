@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Pinned to pcrecomp 1dfdaef, now that the toolkit changes this needs are merged
+  (pcrecomp#74, #75).
+
 ## [0.1.0] - 2026-10-10
 
 ### Added

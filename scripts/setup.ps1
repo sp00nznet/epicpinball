@@ -29,7 +29,7 @@ $Log = Join-Path $Root "setup.log"
 # The toolkit revision this game needs (README, "Building from source"). A
 # commit, not a branch: the branch moves, this build should not.
 $PcrecompUrl = "https://github.com/sp00nznet/pcrecomp.git"
-$PcrecompRef = "feat/decode16-addr32"
+$PcrecompRef = "1dfdaef3a51c670e5931b0e5ef1a3b6e6cd9383e"  # pcrecomp#74, #75
 
 function Say($m) { Write-Host $m; $m | Out-File $Log -Append -Encoding utf8 }
 function Fail($m) {

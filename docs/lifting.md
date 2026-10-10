@@ -52,8 +52,8 @@ counts its mixing loops in ECX with `67 E2 xx` (`loop` with an address-size
 prefix). pcrecomp's decode16 knew the `67h` prefix existed and ignored it, so
 `67 89 04 9D A4 07 00 00` came out as `mov [si], ax` followed by garbage, and
 the driver's jump table `jmp word [ebx*2+2524h]` as `jmp word [si]` — which
-jumped to `0504h`, two bytes inside an instruction. pcrecomp branch
-`feat/decode16-addr32` adds the 32-bit ModR/M + SIB forms, `moffs32`, full-width
+jumped to `0504h`, two bytes inside an instruction. pcrecomp#74
+adds the 32-bit ModR/M + SIB forms, `moffs32`, full-width
 `lea`, and ECX for `loop`/`jcxz` under `67h`. Checked against real x86 with
 `difftest16`: the forms agree except where the effective address passes FFFFh,
 which faults on a real CPU in real mode and is not a comparison at all.

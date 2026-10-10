@@ -9,9 +9,6 @@
   two smooth channels, music-shaped spectrum), not by ear. The DSP output is a
   zero-order hold from 22 kHz to 44.1 kHz; a linear or windowed resampler is the
   obvious upgrade once someone has listened.
-- **Merge the toolkit change.** The build needs pcrecomp's 32-bit addressing in
-  decode16/lift16 (branch `feat/decode16-addr32`); once merged, pin Setup and the
-  README to the merge commit.
 - **A netlab recipe**, so builds and conformance run on the farm like the other
   recomps (repo rules, section 8). Needs the MSVC build to run on the clang-cl
   builder, or an MSVC builder.
