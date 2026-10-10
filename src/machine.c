@@ -258,7 +258,7 @@ void sb_irq_ack(void);
  * so a run depends on the guest's own progress and never on how busy the
  * host is. Scripted keys, frame grabs and recordings then land on the same
  * screens every time; with wall-clock time the conformance scripts raced
- * Planet Strike's title fade and lost. POLL_US is sized so the guest runs
+ * Blake Stone: Planet Strike's title fade and lost. POLL_US is sized so the guest runs
  * at roughly the speed of a fast 386 (docs/architecture.md, "Time"). */
 #define POLL_US 300
 static uint64_t virt_us, polls;

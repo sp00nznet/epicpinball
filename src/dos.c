@@ -297,7 +297,8 @@ static int key_wait(int peek, uint16_t *out)
 }
 
 /* The date and time DOS reports. Deterministic runs see 28 October 1994
- * (Planet Strike's release day), noon plus emulated time, so nothing the
+ * (Blake Stone: Planet Strike's release day, kept from the runtime this
+ * began as), noon plus emulated time, so nothing the
  * game derives from the clock varies between runs. */
 static void dos_clock(struct tm *out)
 {
@@ -603,7 +604,7 @@ void dos_int21(CPU *c)
          * paragraph before the transfer, so a read that runs past offset FFFF
          * carries on into the next 64K. Wrapping it back to DS:0000 -- as an
          * earlier version of this did -- overwrote whatever sat at the bottom
-         * of the segment, which for Planet Strike's loader was its stack. */
+         * of the segment, which for Blake Stone: Planet Strike's loader was its stack. */
         long pos = ftell(fh[h]);
         size_t got = fread(&g_cpu.mem[seg_off(c->ds, c->dx)], 1, n, fh[h]);
         drv_read(h, pos, seg_off(c->ds, c->dx), got);

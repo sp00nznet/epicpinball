@@ -23,11 +23,12 @@ SOFTWARE.
 ---
 
 This licence covers the contents of this repository: the lifter, the runtime,
-the tools, the scripts and the documentation. It does NOT cover DinoPark Tycoon
+the tools, the scripts and the documentation. It does NOT cover Epic Pinball
 itself.
 
-DinoPark Tycoon (1993) was developed by Manley & Associates and published by
-MECC. Its code, art, music and data are not in this repository and are not ours
-to license; rights most plausibly rest with Houghton Mifflin Harcourt. You need
-your own copy of the game to use any of this. The screenshots in docs/img are
-of the game running and are reproduced for illustration only.
+Epic Pinball (1993) was developed and published by Epic MegaGames (now Epic
+Games); its MASI sound drivers are Joshua C. Jensen's. The game's code, art,
+music and data are not in this repository and are not ours to license. You
+need your own copy of the game to use any of this. The screenshots in
+docs/screenshots are of the game running and are reproduced for illustration
+only.
