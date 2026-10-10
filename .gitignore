@@ -1,0 +1,46 @@
+# --- Never committed (repo rules, section 3) --------------------------------
+# Your own copy of the game. Epic Pinball is commercial software; nothing from
+# it -- executables, MASI drivers, tables, music, samples, manuals -- is ever
+# in this repository. Neither is the GOG installer.
+original/
+setup_*.exe
+*.EXE
+*.exe
+*.MUS
+*.PSM
+*.PIN
+*.TFP
+*.DAT
+*.DOC
+*.DIZ
+*.INF
+*.INT
+*.PIF
+
+# Everything generated from the game binaries: the lifted C (work/gen), the
+# run-time placement and miss lists, recordings and frame dumps.
+work/
+
+# What the game writes at run time: CONFIG.PIN, HISCORE.PIN.
+saves/
+
+# --- Build output -------------------------------------------------------------
+build/
+build-*/
+out/
+dist/
+*.obj
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# --- Tooling ------------------------------------------------------------------
+__pycache__/
+*.pyc
+.vs/
+.vscode/
+*.user
+setup.log
+/screenshots/
+*.lnk
