@@ -33,6 +33,8 @@
 #include <stdarg.h>
 #ifdef _WIN32
 #include <direct.h>
+#else
+#include <sys/resource.h>
 #endif
 
 Options g_opt;
@@ -65,7 +67,16 @@ static void mkdirs(const char *p)
 int main(int argc, char **argv)
 {
     static char tail[256];
-    const char *shot = NULL;
+    const char *volatile shot = NULL;    /* read after the longjmp */
+#ifndef _WIN32
+    /* Windows links a 16 MB stack (CMakeLists.txt). Linux grows the main
+     * thread's on demand up to RLIMIT_STACK, so raising that is enough. */
+    struct rlimit rl;
+    if (getrlimit(RLIMIT_STACK, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY && rl.rlim_cur < (16u << 20)) {
+        rl.rlim_cur = rl.rlim_max == RLIM_INFINITY || rl.rlim_max >= (16u << 20) ? 16u << 20 : rl.rlim_max;
+        setrlimit(RLIMIT_STACK, &rl);
+    }
+#endif
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         const char *v = (i + 1 < argc) ? argv[i + 1] : NULL;

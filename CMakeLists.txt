@@ -7,6 +7,9 @@
 #
 #   cmake -B build -G "Visual Studio 17 2022" -A x64
 #   py tools/discover.py        # lift, build, play, repeat until settled
+#
+# On Linux the same, with gcc and SDL2 (build-linux.sh):
+#   cmake -B build-linux -DCMAKE_BUILD_TYPE=Release
 cmake_minimum_required(VERSION 3.20)
 project(epicpinball C)
 
@@ -26,6 +29,15 @@ if(NOT PCRECOMP_HOME)
 endif()
 if(NOT EXISTS "${PCRECOMP_HOME}/runtime/recomp16/cpu.h")
     message(FATAL_ERROR "pcrecomp not found: set PCRECOMP_HOME to a checkout of https://github.com/sp00nznet/pcrecomp")
+endif()
+
+if(NOT WIN32)
+    # the window, sound and pad on Linux
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+    # the lifted C does what 16-bit x86 does: signed overflow wraps, and
+    # pointers into guest memory alias whatever they like
+    add_compile_options(-fwrapv -fno-strict-aliasing)
 endif()
 
 if(MSVC)
@@ -60,7 +72,11 @@ if(EXISTS "${GEN}/images_list.c")
     endforeach()
     add_executable(epicpinball ${RUNTIME} "${GEN}/images_list.c" ${image_libs})
     target_include_directories(epicpinball PRIVATE src "${GEN}" "${PCRECOMP_HOME}/runtime")
-    target_link_libraries(epicpinball PRIVATE user32 gdi32 winmm shell32 d3d11 dxgi dxguid)
+    if(WIN32)
+        target_link_libraries(epicpinball PRIVATE user32 gdi32 winmm shell32 d3d11 dxgi dxguid)
+    else()
+        target_link_libraries(epicpinball PRIVATE PkgConfig::SDL2 m)
+    endif()
     if(EPIC_TRACE)
         target_compile_definitions(epicpinball PRIVATE RECOMP_TRACE EPIC_DEBUG)
         target_compile_options(epicpinball PRIVATE /Zi /Oy-)

@@ -126,7 +126,7 @@ Blaster 16 (DSP 4.05, which is what GOG's DOSBox setup emulates and what
 `SOUNDCRD.INF` was written for), plays **8-bit stereo at 22,050 Hz**, auto-init
 DMA on channel 1, 2 KB blocks, IRQ 7 — DSP commands `41h` and `C6h`. `src/audio.c`
 models that DSP (and the older SB/SB Pro commands), the 8237 DMA channel and the
-PC speaker, and mixes to 44.1 kHz stereo for waveOut, a WAV, or ffmpeg,
+PC speaker, and mixes to 44.1 kHz stereo for waveOut (SDL on Linux), a WAV, or ffmpeg,
 drawing a line between the DSP's samples (or holding each, as an option;
 [remaster](remaster.md#sound)). There is no FM chip to model: MASI mixes
 samples itself.
@@ -138,6 +138,12 @@ GDI if that fails), scancodes from `WM_KEYDOWN`, an XInput pad mapped by
 `controller.ini` (`src/pad.c`), and the remaster's settings menu and hotkeys
 ([remaster](remaster.md)). The game never asks for a mouse driver, and gets
 none.
+On Linux the same `src/host.c` and `src/present.c` use SDL2 instead: an SDL
+window and renderer (OpenGL when there is a GPU, SDL's software renderer when
+not), SDL's audio queue, SDL scancodes translated to the PC's set 1, and SDL's
+GameController for the pad. Everything else -- the DOS machine, the lifted C,
+the settings file -- is the same code; `src/dos.c` finds a file whatever the
+case of its name, since DOS names have none.
 Headless (`--headless`): no window and no audio device, so it works over RDP
 and in CI; `--record` pipes frames to ffmpeg, `--shot-at` writes frames at fixed
 emulated times (through the presenter, offscreen, with `--present WxH`),

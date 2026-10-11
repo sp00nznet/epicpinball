@@ -7,6 +7,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32                        /* Linux: the few MSVC names the machine uses */
+#include <strings.h>
+#include <sys/stat.h>
+#define _stricmp strcasecmp
+#define _strnicmp strncasecmp
+#define _mkdir(d) mkdir(d, 0777)
+typedef struct { long left, top, right, bottom; } RECT;   /* Win32's, for the presenter */
+#endif
 
 extern CPU g_cpu;
 extern uint16_t g_psp_seg;           /* the running program (dos.c) */

@@ -1,10 +1,11 @@
 /*
- * host.c - the modern machine's side: a Win32 window drawn by the presenter
- * (present.c, Direct3D 11; GDI if that fails), waveOut audio, keyboard as raw
- * PC scancodes, an Xbox pad (pad.c) -- or, with --headless, none of that:
- * frames are composed offscreen and, with --record, piped to ffmpeg with the
- * audio muxed in at the end. Headless never touches the desktop, so it works
- * over RDP and from CI (repo rules, section 13).
+ * host.c - the modern machine's side: a window drawn by the presenter
+ * (present.c: Direct3D 11 on Windows, GDI if that fails; SDL2 on Linux),
+ * waveOut or SDL audio, keyboard as raw PC scancodes, an Xbox pad (pad.c) --
+ * or, with --headless, none of that: frames are composed offscreen and, with
+ * --record, piped to ffmpeg with the audio muxed in at the end. Headless
+ * never touches the desktop, so it works over RDP and from CI (repo rules,
+ * section 13).
  *
  * The remaster's settings (scaling, colour, the whole table, the bars beside
  * the picture, fullscreen, the window's place, smooth sound) are kept in
@@ -22,6 +23,11 @@
 #include <windows.h>
 #include <mmsystem.h>
 #include <shellapi.h>
+#include <direct.h>
+#define popen _popen
+#define pclose _pclose
+#else
+#include <SDL.h>
 #endif
 
 #define FRAME_MAX (640 * 480)
@@ -48,12 +54,14 @@ static void compose_view(void)
     else compose();
 }
 
-#ifdef _WIN32
 void present_rect(int cw, int ch, int w, int h, double aspect, int mode, RECT *r);
+#ifdef _WIN32
 int  present_window(HWND hw, const uint32_t *f, int w, int h, double aspect, const Present *s);
+#else
+int  present_window(SDL_Window *wnd, const uint32_t *f, int w, int h, double aspect, const Present *s);
+#endif
 int  present_offscreen(const uint32_t *f, int w, int h, double aspect, const Present *s,
                        int ow, int oh, uint32_t *out);
-#endif
 void pad_load(void);
 void pad_poll(void);
 const char *pad_ini(void);
@@ -89,7 +97,9 @@ static void rec_open(void)
              "-crf 18 \"%s\"", rec_w, rec_h, REC_FPS, rec_w < 1280 ? 1280 : rec_w,
              (rec_w < 1280 ? 1280 : rec_w) * 3 / 4, rec_vpath);
 #ifdef _WIN32
-    rec_video = _popen(cmd, "wb");
+    rec_video = popen(cmd, "wb");
+#else
+    rec_video = popen(cmd, "w");
 #endif
     if (!rec_video) fatal("cannot start ffmpeg (is it on PATH?)");
     rec_audio = fopen(rec_apath, "wb");
@@ -99,9 +109,7 @@ static void rec_open(void)
 static void rec_close(void)
 {
     if (!rec_video) return;
-#ifdef _WIN32
-    _pclose(rec_video);
-#endif
+    pclose(rec_video);
     rec_video = NULL;
     if (rec_audio) { wav_header(rec_audio, (uint32_t)rec_samples); fclose(rec_audio); rec_audio = NULL; }
     char cmd[1600];
@@ -199,58 +207,74 @@ static int mode_by_name(const char *s)
     return PRESENT_SHARP;
 }
 
-#ifdef _WIN32
-static char ini[MAX_PATH];
-static HWND wnd;
-static int is_full;
+/* epicpinball.ini and controller.ini: [section], key = value, ; comments */
+const char *ini_get(const char *path, const char *sec, const char *key, const char *def, char *out, int n)
+{
+    FILE *f = fopen(path, "r");
+    char line[256], cur[64] = "";
+    snprintf(out, n, "%s", def);
+    while (f && fgets(line, sizeof line, f)) {
+        char *s = line, *e;
+        if ((e = strchr(s, ';')) != NULL) *e = 0;
+        while (isspace((unsigned char)*s)) s++;
+        for (e = s + strlen(s); e > s && isspace((unsigned char)e[-1]); ) *--e = 0;
+        if (*s == '[') {
+            if ((e = strchr(s, ']')) != NULL) *e = 0;
+            snprintf(cur, sizeof cur, "%s", s + 1);
+            continue;
+        }
+        if (_stricmp(cur, sec) || (e = strchr(s, '=')) == NULL) continue;
+        char *v = e + 1;
+        while (e > s && isspace((unsigned char)e[-1])) e--;
+        *e = 0;
+        while (isspace((unsigned char)*v)) v++;
+        if (!_stricmp(s, key)) { snprintf(out, n, "%s", v); break; }
+    }
+    if (f) fclose(f);
+    return out;
+}
+
+static char ini[512];
 static Present saved;                /* what the ini says: the command line never reaches it */
 static int saved_full;
 static RECT win_rect;                /* the window's place when not fullscreen */
 
-static void ini_put(const char *sec, const char *k, int v)
-{
-    char s[16]; snprintf(s, sizeof s, "%d", v);
-    WritePrivateProfileStringA(sec, k, s, ini);
-}
-
 static void settings_save(void)
 {
-    if (!*ini) return;
-    char v[64];
-    WritePrivateProfileStringA("display", "scale", mode_names[saved.mode], ini);
-    WritePrivateProfileStringA("display", "look", saved.look ? "vivid" : "natural", ini);
-    WritePrivateProfileStringA("display", "bars", saved.bars ? "blur" : "black", ini);
-    ini_put("display", "whole_table", saved.whole);
-    ini_put("display", "fullscreen", saved_full);
-    if (win_rect.right > win_rect.left) {
-        snprintf(v, sizeof v, "%ld,%ld,%ld,%ld", win_rect.left, win_rect.top,
-                 win_rect.right - win_rect.left, win_rect.bottom - win_rect.top);
-        WritePrivateProfileStringA("display", "window", v, ini);
-    }
-    WritePrivateProfileStringA("sound", "output", g_audio_smooth ? "smooth" : "original", ini);
+    FILE *f = *ini ? fopen(ini, "w") : NULL;
+    if (!f) return;
+    fprintf(f, "[display]\nscale=%s\nlook=%s\nbars=%s\nwhole_table=%d\nfullscreen=%d\n",
+            mode_names[saved.mode], saved.look ? "vivid" : "natural", saved.bars ? "blur" : "black",
+            saved.whole, saved_full);
+    if (win_rect.right > win_rect.left)
+        fprintf(f, "window=%ld,%ld,%ld,%ld\n", (long)win_rect.left, (long)win_rect.top,
+                (long)(win_rect.right - win_rect.left), (long)(win_rect.bottom - win_rect.top));
+    fprintf(f, "[sound]\noutput=%s\n", g_audio_smooth ? "smooth" : "original");
+    fclose(f);
 }
 
 static void settings_load(void)
 {
     char v[64];
-    snprintf(ini, sizeof ini, "%s\\epicpinball.ini", g_opt.savedir);
-    GetPrivateProfileStringA("display", "scale", "sharp", v, sizeof v, ini); S.mode = mode_by_name(v);
-    GetPrivateProfileStringA("display", "look", "natural", v, sizeof v, ini); S.look = !_stricmp(v, "vivid");
-    GetPrivateProfileStringA("display", "bars", "blur", v, sizeof v, ini); S.bars = _stricmp(v, "black") != 0;
-    S.whole = GetPrivateProfileIntA("display", "whole_table", 0, ini);
+    snprintf(ini, sizeof ini, "%s/epicpinball.ini", g_opt.savedir);
+    S.mode = mode_by_name(ini_get(ini, "display", "scale", "sharp", v, sizeof v));
+    S.look = !_stricmp(ini_get(ini, "display", "look", "natural", v, sizeof v), "vivid");
+    S.bars = _stricmp(ini_get(ini, "display", "bars", "blur", v, sizeof v), "black") != 0;
+    S.whole = atoi(ini_get(ini, "display", "whole_table", "0", v, sizeof v));
     saved = S;
-    saved_full = GetPrivateProfileIntA("display", "fullscreen", 0, ini);
+    saved_full = atoi(ini_get(ini, "display", "fullscreen", "0", v, sizeof v));
     if (saved_full) g_opt.fullscreen = 1;
-    GetPrivateProfileStringA("display", "window", "", v, sizeof v, ini);
     long x, y, w, h;
-    if (sscanf(v, "%ld,%ld,%ld,%ld", &x, &y, &w, &h) == 4 && w > 100 && h > 100) {
+    if (sscanf(ini_get(ini, "display", "window", "", v, sizeof v), "%ld,%ld,%ld,%ld", &x, &y, &w, &h) == 4
+        && w > 100 && h > 100) {
         RECT r = { x, y, x + w, y + h };
-        if (MonitorFromRect(&r, MONITOR_DEFAULTTONULL)) win_rect = r;   /* still on a screen */
-    }
-    GetPrivateProfileStringA("sound", "output", "smooth", v, sizeof v, ini);
-    g_audio_smooth = _stricmp(v, "original") != 0;
-}
+#ifdef _WIN32
+        if (MonitorFromRect(&r, MONITOR_DEFAULTTONULL))   /* still on a screen */
 #endif
+            win_rect = r;
+    }
+    g_audio_smooth = _stricmp(ini_get(ini, "sound", "output", "smooth", v, sizeof v), "original") != 0;
+}
 
 /* The command line wins over the ini, and is all a headless run reads */
 static void settings_args(void)
@@ -264,20 +288,46 @@ static void settings_args(void)
 
 /* ---- window ---------------------------------------------------------------- */
 
-#ifdef _WIN32
-static int quit_req;
-static BITMAPINFO bmi;
+static int quit_req, is_full;
+static void set_fullscreen(int on);
+static void open_file(const char *path);
 
-/* PrtSc: what is on screen, to screenshots\epic-NNN.bmp */
+/* PrtSc: what is on screen, to screenshots/epic-NNN.bmp */
 static void screenshot_key(void)
 {
     char p[256];
-    CreateDirectoryA("screenshots", NULL);
+    _mkdir("screenshots");
     for (int n = 0; n < 1000; n++) {
         snprintf(p, sizeof p, "screenshots/epic-%03d.bmp", n);
-        if (GetFileAttributesA(p) == INVALID_FILE_ATTRIBUTES) { host_snapshot(p); return; }
+        FILE *f = fopen(p, "rb");
+        if (!f) { host_snapshot(p); return; }
+        fclose(f);
     }
 }
+
+enum { ID_MODE = 100, ID_LOOK = 120, ID_WHOLE = 130, ID_BARS_BLUR, ID_BARS_BLACK, ID_FULL,
+       ID_SOUND_SMOOTH, ID_SOUND_ORIG, ID_SHOT, ID_PAD };
+
+/* A change made in the window: shown, and remembered */
+static void command(int id)
+{
+    if (id >= ID_MODE && id < ID_MODE + PRESENT_MODES) S.mode = saved.mode = id - ID_MODE;
+    else if (id == ID_LOOK || id == ID_LOOK + 1) S.look = saved.look = id - ID_LOOK;
+    else if (id == ID_WHOLE) S.whole = saved.whole = !S.whole;
+    else if (id == ID_BARS_BLUR || id == ID_BARS_BLACK) S.bars = saved.bars = id == ID_BARS_BLUR;
+    else if (id == ID_FULL) { set_fullscreen(!is_full); saved_full = is_full; }
+    else if (id == ID_SOUND_SMOOTH || id == ID_SOUND_ORIG) g_audio_smooth = id == ID_SOUND_SMOOTH;
+    else if (id == ID_SHOT) screenshot_key();
+    else if (id == ID_PAD) open_file(pad_ini());
+    else return;
+    settings_save();
+}
+
+#ifdef _WIN32
+static HWND wnd;
+static BITMAPINFO bmi;
+
+static void open_file(const char *path) { ShellExecuteA(wnd, "open", path, NULL, NULL, SW_SHOWNORMAL); }
 
 static void set_fullscreen(int on)
 {
@@ -317,24 +367,6 @@ static void paint(void)
 {
     if (!g_opt.classic && present_window(wnd, frame, fw, fh, frame_aspect, &S)) return;
     HDC dc = GetDC(wnd); paint_gdi(dc); ReleaseDC(wnd, dc);
-}
-
-enum { ID_MODE = 100, ID_LOOK = 120, ID_WHOLE = 130, ID_BARS_BLUR, ID_BARS_BLACK, ID_FULL,
-       ID_SOUND_SMOOTH, ID_SOUND_ORIG, ID_SHOT, ID_PAD };
-
-/* A change made in the window: shown, and remembered */
-static void command(int id)
-{
-    if (id >= ID_MODE && id < ID_MODE + PRESENT_MODES) S.mode = saved.mode = id - ID_MODE;
-    else if (id == ID_LOOK || id == ID_LOOK + 1) S.look = saved.look = id - ID_LOOK;
-    else if (id == ID_WHOLE) S.whole = saved.whole = !S.whole;
-    else if (id == ID_BARS_BLUR || id == ID_BARS_BLACK) S.bars = saved.bars = id == ID_BARS_BLUR;
-    else if (id == ID_FULL) { set_fullscreen(!is_full); saved_full = is_full; }
-    else if (id == ID_SOUND_SMOOTH || id == ID_SOUND_ORIG) g_audio_smooth = id == ID_SOUND_SMOOTH;
-    else if (id == ID_SHOT) screenshot_key();
-    else if (id == ID_PAD) ShellExecuteA(wnd, "open", pad_ini(), NULL, NULL, SW_SHOWNORMAL);
-    else return;
-    settings_save();
 }
 
 static void menu(int x, int y)
@@ -443,29 +475,11 @@ static void wave_push(const int16_t *s, int frames)
         }
     }
 }
-#endif
 
-void host_audio(const int16_t *s, int frames)
+static void window_open(void)
 {
-    if (rec_audio) { fwrite(s, 4, frames, rec_audio); rec_samples += frames; }
-    if (wav_out) { fwrite(s, 4, frames, wav_out); wav_samples += frames; }
-#ifdef _WIN32
-    if (wout) wave_push(s, frames);
-#endif
-}
-
-void host_init(void)
-{
-    keys_parse();
-    if (g_opt.record) rec_open();
-    if (g_opt.wav && (wav_out = fopen(g_opt.wav, "wb")) != NULL) wav_header(wav_out, 0);
-#ifdef _WIN32
     bmi.bmiHeader.biSize = sizeof bmi.bmiHeader;
     bmi.bmiHeader.biPlanes = 1; bmi.bmiHeader.biBitCount = 32; bmi.bmiHeader.biCompression = BI_RGB;
-    if (g_opt.headless) { settings_args(); return; }
-    settings_load();
-    settings_args();
-    pad_load();
     WNDCLASSA wc = {0};
     wc.lpfnWndProc = wndproc; wc.hInstance = GetModuleHandle(NULL);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW); wc.lpszClassName = "epicpinball";
@@ -483,9 +497,198 @@ void host_init(void)
     GetWindowRect(wnd, &win_rect);
     if (g_opt.fullscreen) set_fullscreen(1);
     if (!g_opt.mute) wave_open();
-#else
-    settings_args();
+}
+
+/* Messages, the pad, and the picture */
+static void window_frame(void)
+{
+    MSG msg;
+    while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageA(&msg); }
+    if (GetForegroundWindow() == wnd) pad_poll();
+    if (quit_req) dos_exit(0);
+    compose_view();
+    paint();
+}
+
+static void window_audio(const int16_t *s, int frames) { if (wout) wave_push(s, frames); }
+
+static void window_close(void)
+{
+    if (wout) { waveOutReset(wout); waveOutClose(wout); }
+    if (wnd) { settings_save(); DestroyWindow(wnd); }
+}
+
+#else /* SDL2: Linux */
+
+static SDL_Window *wnd;
+static SDL_AudioDeviceID aud;
+
+static void open_file(const char *path)
+{
+    char cmd[600];
+    snprintf(cmd, sizeof cmd, "xdg-open \"%s\" >/dev/null 2>&1 &", path);
+    if (system(cmd)) {}
+}
+
+/* The window's place, kept for the ini while it is not fullscreen or maximised */
+static void remember_place(void)
+{
+    if (is_full || (SDL_GetWindowFlags(wnd) & SDL_WINDOW_MAXIMIZED)) return;
+    int x, y, w, h;
+    SDL_GetWindowPosition(wnd, &x, &y);
+    SDL_GetWindowSize(wnd, &w, &h);
+    win_rect = (RECT){ x, y, x + w, y + h };
+}
+
+static void set_fullscreen(int on)
+{
+    if (on == is_full) return;
+    remember_place();
+    SDL_SetWindowFullscreen(wnd, on ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    is_full = on;
+}
+
+/* SDL has no popup menus: the settings and keys, with buttons for what no key does */
+static void menu(void)
+{
+    char msg[300];
+    snprintf(msg, sizeof msg,
+             "Whole table: %s (F7)\nColour: %s (F9)\nScaling: %s (F12)\nFullscreen: F11, Alt+Enter\n"
+             "Beside the picture: %s\nSound: %s\nScreenshot: PrtSc",
+             S.whole ? "on" : "off", S.look ? "vivid" : "natural", mode_names[S.mode],
+             S.bars ? "blur" : "black", g_audio_smooth ? "smooth" : "original");
+    const SDL_MessageBoxButtonData b[] = {
+        { 0, S.bars ? ID_BARS_BLACK : ID_BARS_BLUR, S.bars ? "Black bars" : "Blurred bars" },
+        { 0, g_audio_smooth ? ID_SOUND_ORIG : ID_SOUND_SMOOTH, g_audio_smooth ? "Original sound" : "Smooth sound" },
+        { 0, ID_PAD, "Controller mapping..." },
+        { SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Close" },
+    };
+    const SDL_MessageBoxData d = { SDL_MESSAGEBOX_INFORMATION, wnd, "Epic Pinball settings", msg, 4, b, NULL };
+    int id = 0;
+    uint64_t t = host_us();
+    SDL_ShowMessageBox(&d, &id);
+    machine_paused(host_us() - t);                 /* the game stood still meanwhile */
+    command(id);
+}
+
+/* SDL's scancodes (USB usage numbers) as the PC's set 1, | 0x100 for E0 */
+static int pc_scancode(int s)
+{
+    static const uint8_t t[101] = {
+        [4]  = 0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32,   /* A-M */
+               0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,   /* N-Z */
+        [30] = 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,                     /* 1-0 */
+        [40] = 0x1C, 0x01, 0x0E, 0x0F, 0x39, 0x0C, 0x0D, 0x1A, 0x1B, 0x2B, 0x2B, 0x27, 0x28,   /* Enter... */
+               0x29, 0x33, 0x34, 0x35, 0x3A,                                                   /* ...Caps */
+        [58] = 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x57, 0x58,         /* F1-F12 */
+        [71] = 0x46, 0, 0x52, 0x47, 0x49, 0x53, 0x4F, 0x51, 0x4D, 0x4B, 0x50, 0x48,           /* ScrLk; Ins-Up */
+        [83] = 0x45, 0x35, 0x37, 0x4A, 0x4E, 0x1C, 0x4F, 0x50, 0x51, 0x4B, 0x4C, 0x4D,         /* keypad */
+               0x47, 0x48, 0x49, 0x52, 0x53, 0x56,
+    };
+    switch (s) {
+    case SDL_SCANCODE_LCTRL:  return 0x1D;
+    case SDL_SCANCODE_LSHIFT: return 0x2A;
+    case SDL_SCANCODE_LALT:   return 0x38;
+    case SDL_SCANCODE_RCTRL:  return 0x11D;
+    case SDL_SCANCODE_RSHIFT: return 0x36;
+    case SDL_SCANCODE_RALT:   return 0x138;
+    }
+    if (s < 0 || s > 100 || !t[s]) return 0;
+    return t[s] | ((s >= SDL_SCANCODE_INSERT && s <= SDL_SCANCODE_UP) || s == SDL_SCANCODE_KP_DIVIDE
+                   || s == SDL_SCANCODE_KP_ENTER ? 0x100 : 0);
+}
+
+static void key(const SDL_KeyboardEvent *k)
+{
+    int up = k->type == SDL_KEYUP, s = k->keysym.scancode;
+    if (s == SDL_SCANCODE_RETURN && (k->keysym.mod & KMOD_ALT)) { if (!up && !k->repeat) command(ID_FULL); return; }
+    if (s == SDL_SCANCODE_PRINTSCREEN) { if (up) screenshot_key(); return; }
+    if (s == SDL_SCANCODE_F7 || (s >= SDL_SCANCODE_F9 && s <= SDL_SCANCODE_F12)) {
+        if (up || k->repeat) return;
+        if (s == SDL_SCANCODE_F7) command(ID_WHOLE);
+        if (s == SDL_SCANCODE_F9) command(ID_LOOK + !S.look);
+        if (s == SDL_SCANCODE_F10) menu();
+        if (s == SDL_SCANCODE_F11) command(ID_FULL);
+        if (s == SDL_SCANCODE_F12) command(ID_MODE + (S.mode + 1) % PRESENT_MODES);
+        return;
+    }
+    if (k->repeat) return;                          /* the game does its own repeat */
+    int sc = pc_scancode(s);
+    if (!sc) return;
+    if (sc & 0x100) kbd_scancode(0xE0);
+    kbd_scancode((uint8_t)((sc & 0xFF) | (up ? 0x80 : 0)));
+}
+
+static void window_open(void)
+{
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) fatal("SDL: %s", SDL_GetError());
+    int x = win_rect.left, y = win_rect.top, w = win_rect.right - win_rect.left, h = win_rect.bottom - win_rect.top;
+    if (g_opt.window || w <= 0) {                  /* --window N, or no place remembered */
+        int s = g_opt.window ? g_opt.window : 3;
+        x = y = SDL_WINDOWPOS_UNDEFINED; w = 320 * s; h = 240 * s;
+    }
+    wnd = SDL_CreateWindow("Epic Pinball", x, y, w, h, SDL_WINDOW_RESIZABLE);
+    if (!wnd) fatal("SDL window: %s", SDL_GetError());
+    remember_place();
+    if (g_opt.fullscreen) set_fullscreen(1);
+    if (!g_opt.mute && SDL_InitSubSystem(SDL_INIT_AUDIO) == 0) {
+        SDL_AudioSpec want = { 0 };
+        want.freq = AUDIO_RATE; want.format = AUDIO_S16SYS; want.channels = 2; want.samples = 1024;
+        aud = SDL_OpenAudioDevice(NULL, 0, &want, NULL, 0);
+        if (aud) SDL_PauseAudioDevice(aud, 0);
+    }
+}
+
+/* Events, the pad, and the picture */
+static void window_frame(void)
+{
+    SDL_Event e;
+    while (SDL_PollEvent(&e)) {
+        if (e.type == SDL_QUIT) quit_req = 1;
+        else if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) key(&e.key);
+        else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_RIGHT) menu();
+        else if (e.type == SDL_WINDOWEVENT) {
+            if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) pad_load();   /* controller.ini may have been edited */
+            if (e.window.event == SDL_WINDOWEVENT_MOVED || e.window.event == SDL_WINDOWEVENT_RESIZED) remember_place();
+        }
+    }
+    if (SDL_GetWindowFlags(wnd) & SDL_WINDOW_INPUT_FOCUS) pad_poll();
+    if (quit_req) dos_exit(0);
+    compose_view();
+    present_window(wnd, frame, fw, fh, frame_aspect, &S);
+}
+
+/* A queue the main thread fills, as long as waveOut's ring: drop rather than block */
+static void window_audio(const int16_t *s, int frames)
+{
+    if (aud && SDL_GetQueuedAudioSize(aud) < 8 * 1024 * 4) SDL_QueueAudio(aud, s, (Uint32)frames * 4);
+}
+
+static void window_close(void)
+{
+    if (aud) SDL_CloseAudioDevice(aud);
+    if (wnd) { settings_save(); SDL_DestroyWindow(wnd); }
+    SDL_Quit();
+}
 #endif
+
+void host_audio(const int16_t *s, int frames)
+{
+    if (rec_audio) { fwrite(s, 4, frames, rec_audio); rec_samples += frames; }
+    if (wav_out) { fwrite(s, 4, frames, wav_out); wav_samples += frames; }
+    if (wnd) window_audio(s, frames);
+}
+
+void host_init(void)
+{
+    keys_parse();
+    if (g_opt.record) rec_open();
+    if (g_opt.wav && (wav_out = fopen(g_opt.wav, "wb")) != NULL) wav_header(wav_out, 0);
+    if (g_opt.headless) { settings_args(); return; }
+    settings_load();
+    settings_args();
+    pad_load();
+    window_open();
 }
 
 void host_frame(void)
@@ -503,17 +706,10 @@ void host_frame(void)
             while ((rec_frames + 1) * per <= now) { fwrite(f, 4, (size_t)rec_w * rec_h, rec_video); rec_frames++; }
         }
     }
-#ifdef _WIN32
     if (!wnd) return;
     if (now - last_present < (uint64_t)(PIT_HZ / 70)) return;
     last_present = now;
-    MSG msg;
-    while (PeekMessageA(&msg, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessageA(&msg); }
-    if (GetForegroundWindow() == wnd) pad_poll();
-    if (quit_req) dos_exit(0);
-    compose_view();
-    paint();
-#endif
+    window_frame();
 }
 
 static void write_bmp(const char *path, const uint32_t *px, int w, int h)
@@ -536,18 +732,16 @@ static void write_bmp(const char *path, const uint32_t *px, int w, int h)
 void host_snapshot(const char *path)
 {
     compose_view();
-#ifdef _WIN32
     if (g_opt.present_w > 0) {
         size_t n = (size_t)g_opt.present_w * g_opt.present_h;
         uint32_t *out = malloc(n * 4);
         if (out && present_offscreen(frame, fw, fh, frame_aspect, &S, g_opt.present_w, g_opt.present_h, out))
             write_bmp(path, out, g_opt.present_w, g_opt.present_h);
         else
-            fprintf(stderr, "[present] %s: no Direct3D 11, not written\n", path);
+            fprintf(stderr, "[present] %s: no presenter, not written\n", path);
         free(out);
         return;
     }
-#endif
     write_bmp(path, frame, fw, fh);
 }
 
@@ -555,8 +749,5 @@ void host_shutdown(void)
 {
     rec_close();
     if (wav_out) { wav_header(wav_out, (uint32_t)wav_samples); fclose(wav_out); wav_out = NULL; }
-#ifdef _WIN32
-    if (wout) { waveOutReset(wout); waveOutClose(wout); }
-    if (wnd) { settings_save(); DestroyWindow(wnd); }
-#endif
+    window_close();
 }

@@ -10,6 +10,11 @@ headless time is deterministic and runs far faster than real time
 ([architecture](architecture.md#time)). Frames, audio and logs of the last run
 stay in `work/conformance/` to explain any FAIL.
 
+It runs `build\Release\epicpinball.exe` on Windows and `build-linux/epicpinball`
+on Linux (`python3 tools/conformance.py`), or whatever `EPIC_EXE` names. The
+Linux build passes the same 133, and its frames match the Windows build's bit
+for bit: the lifted C and the machine are the same code under either compiler.
+
 ## What it checks, and why that is the ground truth
 
 There is no reference build to diff frames against — the original only runs

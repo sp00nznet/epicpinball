@@ -124,10 +124,28 @@ far they go before they count. Settings menu → *Controller mapping...* opens
 the file; it is read again when the window comes back to the front. Not yet
 tried on a real pad.
 
+## On Linux
+
+All of the above, with SDL2 doing what Win32 and Direct3D do on Windows
+(`./setup.sh`, README):
+
+- The presenter is SDL's renderer, OpenGL when there is a GPU. Sharp is a
+  nearest prescale to whole multiples and bilinear the rest of the way, which
+  is what the shader computes; CRT is the shader's beam and grille laid over
+  it as a multiply (SDL's software renderer cannot brighten with it, so there
+  CRT comes out darker); vivid and the blur are the same CPU code.
+- The settings menu (right-click, F10) is a dialog: what is set, the keys for
+  it, and buttons for the bars, the sound and `controller.ini` (opened with
+  `xdg-open`).
+- The pad is SDL's GameController, which gives any pad Xbox names, so
+  `controller.ini` maps it as it does on Windows.
+- The files are the same: `saves/epicpinball.ini`, `saves/controller.ini`,
+  `screenshots/`.
+
 ## Testing it
 
 `--present WxH` sends every `--shot-at` frame through the presenter,
-offscreen, at that size, so all of the above runs headless — over RDP and in
+offscreen, at that size (on Linux with SDL's software renderer), so all of the above runs headless — over RDP and in
 CI. The conformance harness ([conformance](conformance.md)) checks, on a table
 with each scoreboard height, that the whole table is the very page the game
 scrolls over (the playfield the game shows at the same moment is a band of

@@ -2,7 +2,7 @@
 """
 discover.py - lift, build, play, repeat, until the lift stops growing.
 
-    py tools/discover.py
+    py tools/discover.py            (python3 on Linux)
 
 What the lift needs that the binaries alone do not say:
 
@@ -49,8 +49,12 @@ def main():
     for rnd in range(1, 7):
         print(f'round {rnd}')
         step([py, 'tools/lift.py'], 'lift')
-        step(['cmake', '-B', 'build'], 'configure')
-        step(['cmake', '--build', 'build', '--config', 'Release', '--', '-m'], 'build')
+        if os.name == 'nt':
+            step(['cmake', '-B', 'build'], 'configure')
+            step(['cmake', '--build', 'build', '--config', 'Release', '--', '-m'], 'build')
+        else:                          # Linux: build-linux/epicpinball (build-linux.sh)
+            step(['cmake', '-B', 'build-linux', '-DCMAKE_BUILD_TYPE=Release'], 'configure')
+            step(['cmake', '--build', 'build-linux', '-j', str(os.cpu_count() or 4)], 'build')
         before = state()
         out = os.path.join(ROOT, 'work', 'discover')
         os.makedirs(out, exist_ok=True)

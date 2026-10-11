@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Linux**, natively: the same lifted C and DOS machine built with gcc,
+  with SDL2 for the window, sound and pad (`src/host.c`, `src/present.c`,
+  `src/pad.c`); `setup.sh` (the tools, the game, pcrecomp, lift, build, a
+  launcher) and `build-linux.sh`, after the Red Alert 2 recomp's. Every
+  remaster feature works there; the settings menu is a dialog. Conformance
+  133/133 on Debian 13, from a clean `./setup.sh`, and its frames are
+  bit-identical to the Windows build's.
 - The remaster (docs/remaster.md), all optional and off with `--classic`:
   - **The whole table** (F7): `vga_compose_table` draws the page of video
     memory the game scrolls over -- the full table, ball included -- with the

@@ -1,10 +1,10 @@
 # Build, test, lint on every push and PR (repo rules, section 8).
 #
 # The game is commercial and never in the repository, so CI cannot lift or
-# play it: it builds the runtime's selftest (split screen, SB16 stereo, the
-# image registry -- no game data), checks the Python, and runs the
-# conformance harness, which reports SKIP. The full 125-check run happens
-# where the game data is; see docs/conformance.md.
+# play it: on Windows and on Linux it builds the runtime's selftest (split
+# screen, SB16 stereo, the image registry -- no game data), checks the Python
+# and the shell, and runs the conformance harness, which reports SKIP. The
+# full 133-check run happens where the game data is; see docs/conformance.md.
 name: ci
 on:
   push:
@@ -38,3 +38,28 @@ jobs:
         run: build/Release/selftest.exe
       - name: Conformance (skips without game data)
         run: python tools/conformance.py
+
+  # The same runtime built natively on Linux, gcc and SDL2 (setup.sh, README)
+  linux:
+    runs-on: ubuntu-24.04
+    env:
+      PCRECOMP_REF: 1dfdaef3a51c670e5931b0e5ef1a3b6e6cd9383e  # as above
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: sp00nznet/pcrecomp
+          ref: ${{ env.PCRECOMP_REF }}
+          path: _pcrecomp
+      - name: Packages
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev
+      - name: Lint (shell)
+        run: bash -n setup.sh && sh -n build-linux.sh
+      - name: Configure
+        run: cmake -B build-linux -DCMAKE_BUILD_TYPE=Release "-DPCRECOMP_HOME=${{ github.workspace }}/_pcrecomp"
+      - name: Build selftest
+        run: cmake --build build-linux --target selftest
+      - name: Selftest
+        run: build-linux/selftest
+      - name: Conformance (skips without game data)
+        run: python3 tools/conformance.py

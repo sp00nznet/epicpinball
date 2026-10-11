@@ -44,3 +44,4 @@ __pycache__/
 setup.log
 /screenshots/
 *.lnk
+/epicpinball.sh

@@ -15,7 +15,9 @@
 - **A netlab recipe**, so builds and conformance run on the farm like the other
   recomps (repo rules, section 8). Needs the MSVC build to run on the clang-cl
   builder, or an MSVC builder.
-- **CI**: build the runtime without game data and run conformance, which skips.
+- **Linux on a real desktop.** It is tested headless and through SDL's
+  offscreen driver with Mesa's OpenGL (WSL, Debian 13), not yet in a window
+  on a Linux desktop with sound and a pad.
 
 ## Later
 

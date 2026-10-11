@@ -5,11 +5,17 @@
  * with the defaults on first run -- GOG's DOSBox mapping (its controls.txt):
  * triggers flip, bumpers nudge, A plunges -- and read at start and whenever
  * the settings menu says so. The pad only acts while the window is in front.
+ * On Linux the pad is SDL2's GameController, which names any pad's buttons
+ * the Xbox way, so the same file maps it.
  */
 #include "machine.h"
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <SDL.h>
+#endif
 
-static const struct { const char *name; WORD bit; } k_buttons[] = {
+static const struct { const char *name; uint16_t bit; } k_buttons[] = {
     { "dpad_up", 0x0001 }, { "dpad_down", 0x0002 }, { "dpad_left", 0x0004 }, { "dpad_right", 0x0008 },
     { "start", 0x0010 }, { "back", 0x0020 }, { "left_stick", 0x0040 }, { "right_stick", 0x0080 },
     { "lb", 0x0100 }, { "rb", 0x0200 }, { "a", 0x1000 }, { "b", 0x2000 }, { "x", 0x4000 }, { "y", 0x8000 },
@@ -36,40 +42,38 @@ static const char k_default[] =
 
 static int map[IN_COUNT];            /* scan code, | 0x100 for E0-prefixed; 0 = none */
 static int trigger = 64, stick = 12000;
-static char ini[MAX_PATH];
+static char ini[512];
 
 int host_key_by_name(const char *s);  /* host.c */
+const char *ini_get(const char *path, const char *sec, const char *key, const char *def, char *out, int n);
 
 const char *pad_ini(void) { return ini; }
 
 void pad_load(void)
 {
-    snprintf(ini, sizeof ini, "%s\\controller.ini", g_opt.savedir);
-    if (GetFileAttributesA(ini) == INVALID_FILE_ATTRIBUTES) {
-        FILE *f = fopen(ini, "wb");
-        if (f) { fputs(k_default, f); fclose(f); }
-    }
+    snprintf(ini, sizeof ini, "%s/controller.ini", g_opt.savedir);
+    FILE *f = fopen(ini, "rb");
+    if (f) fclose(f);
+    else if ((f = fopen(ini, "wb")) != NULL) { fputs(k_default, f); fclose(f); }
     char v[32];
     for (int i = 0; i < IN_COUNT; i++) {
-        GetPrivateProfileStringA("controller", i < NBUTTONS ? k_buttons[i].name : k_extra[i - NBUTTONS],
-                                 "none", v, sizeof v, ini);
+        ini_get(ini, "controller", i < NBUTTONS ? k_buttons[i].name : k_extra[i - NBUTTONS], "none", v, sizeof v);
         map[i] = _stricmp(v, "none") ? host_key_by_name(v) : 0;
     }
-    trigger = GetPrivateProfileIntA("controller", "trigger", 64, ini);
-    stick = GetPrivateProfileIntA("controller", "stick", 12000, ini);
+    trigger = atoi(ini_get(ini, "controller", "trigger", "64", v, sizeof v));
+    stick = atoi(ini_get(ini, "controller", "stick", "12000", v, sizeof v));
 }
 
-typedef struct { DWORD packet; WORD buttons; BYTE lt, rt; SHORT lx, ly, rx, ry; } XState;
+/* XINPUT_STATE's layout */
+typedef struct { uint32_t packet; uint16_t buttons; uint8_t lt, rt; int16_t lx, ly, rx, ry; } XState;
+
+#ifdef _WIN32
 typedef DWORD (WINAPI *XInputGetState_t)(DWORD, XState *);
 
-void pad_poll(void)
+static int get_state(XState *s)
 {
     static XInputGetState_t get;
     static int tried;
-    static uint8_t held[256];        /* how many pad inputs hold each key down */
-    static uint32_t was;
-    XState s;
-
     if (!tried) {
         HMODULE m;
         tried = 1;
@@ -77,7 +81,41 @@ void pad_poll(void)
         if (!m) m = LoadLibraryA("xinput9_1_0.dll");
         if (m) get = (XInputGetState_t)GetProcAddress(m, "XInputGetState");
     }
-    if (!get || get(0, &s) != ERROR_SUCCESS) return;
+    return get && get(0, s) == ERROR_SUCCESS;
+}
+#else
+/* The first pad SDL knows, read into XInput's shape */
+static int get_state(XState *s)
+{
+    static SDL_GameController *gc;
+    static const SDL_GameControllerButton b[NBUTTONS] = {     /* in k_buttons' order */
+        SDL_CONTROLLER_BUTTON_DPAD_UP, SDL_CONTROLLER_BUTTON_DPAD_DOWN, SDL_CONTROLLER_BUTTON_DPAD_LEFT,
+        SDL_CONTROLLER_BUTTON_DPAD_RIGHT, SDL_CONTROLLER_BUTTON_START, SDL_CONTROLLER_BUTTON_BACK,
+        SDL_CONTROLLER_BUTTON_LEFTSTICK, SDL_CONTROLLER_BUTTON_RIGHTSTICK, SDL_CONTROLLER_BUTTON_LEFTSHOULDER,
+        SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, SDL_CONTROLLER_BUTTON_A, SDL_CONTROLLER_BUTTON_B,
+        SDL_CONTROLLER_BUTTON_X, SDL_CONTROLLER_BUTTON_Y };
+    if (gc && !SDL_GameControllerGetAttached(gc)) { SDL_GameControllerClose(gc); gc = NULL; }
+    for (int i = 0; !gc && i < SDL_NumJoysticks(); i++)
+        if (SDL_IsGameController(i)) gc = SDL_GameControllerOpen(i);
+    if (!gc) return 0;
+    s->buttons = 0;
+    for (int i = 0; i < NBUTTONS; i++) if (SDL_GameControllerGetButton(gc, b[i])) s->buttons |= k_buttons[i].bit;
+    s->lt = (uint8_t)(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT) >> 7);
+    s->rt = (uint8_t)(SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) >> 7);
+    s->lx = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX);
+    int y = -SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY);   /* XInput's up is +, SDL's - */
+    s->ly = (int16_t)(y > 32767 ? 32767 : y);
+    return 1;
+}
+#endif
+
+void pad_poll(void)
+{
+    static uint8_t held[256];        /* how many pad inputs hold each key down */
+    static uint32_t was;
+    XState s;
+
+    if (!get_state(&s)) return;
 
     uint32_t now = 0;
     for (int i = 0; i < NBUTTONS; i++) if (s.buttons & k_buttons[i].bit) now |= 1u << i;

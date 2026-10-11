@@ -26,7 +26,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASELINE = os.path.join(ROOT, 'tests', 'conformance_baseline.json')
-EXE = os.path.join(ROOT, 'build', 'Release', 'epicpinball.exe')
+EXE = os.environ.get('EPIC_EXE') or (os.path.join(ROOT, 'build', 'Release', 'epicpinball.exe') if os.name == 'nt'
+                                     else os.path.join(ROOT, 'build-linux', 'epicpinball'))
 DATA = os.path.join(ROOT, 'original')
 TABLES = 13
 
@@ -152,8 +153,9 @@ def scenario_remaster(out, n, plain):
     """The remaster's picture, on a table with each scoreboard height (1-8: 20
     rows, 9-13: 30). Whole table: the page the screen scrolls over, drawn from
     VRAM -- the frame the game shows at the same moment must be a band of it --
-    with the scoreboard under it. The presenter (Direct3D 11, offscreen):
-    that picture letterboxed into 1280x720 with the blur beside it."""
+    with the scoreboard under it. The presenter (offscreen: Direct3D 11, or
+    SDL2's software renderer on Linux): that picture letterboxed into 1280x720
+    with the blur beside it."""
     keys, play, end = table_keys(n)
     t = end - 500                      # scenario_table's frame `b`, same script: the same moment
     w_dir, p_dir = os.path.join(out, 'whole'), os.path.join(out, 'present')

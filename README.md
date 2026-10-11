@@ -4,7 +4,7 @@
 
 **Epic Pinball** (Epic MegaGames, 1993) — all thirteen tables of the GOG
 *Complete Collection*, taken apart from their shipping DOS executables and
-rebuilt as one native Windows program. No DOSBox. No emulator.
+rebuilt as one native program for Windows or Linux. No DOSBox. No emulator.
 
 <img src="docs/screenshots/play.gif" width="480" alt="Super Android running as recompiled native code: the ball comes off the plunger and up through the top lanes">
 
@@ -40,6 +40,7 @@ conformance harness passes 133/133.**
 | Dot-matrix scoreboard (the VGA split screen) | ✅ |
 | Music and effects: Sound Blaster 16, 8-bit stereo, 22 kHz | ✅ measured, see below |
 | Windowed play at real speed | ✅ (seen on a virtual monitor) |
+| Linux, natively (gcc, SDL2) | ✅ 133/133 conformance on Debian 13; not yet tried on a Linux desktop |
 | Gamepad (XInput, `controller.ini`, GOG's DOSBox mapping by default) | implemented, untested on a real pad |
 | `SETUP.EXE` (the sound card menu) | not lifted: its start-up check is answered, and GOG's `SOUNDCRD.INF` (Sound Blaster 16) is used as shipped |
 | The `DEMO\` folder's shareware version | not supported |
@@ -63,7 +64,7 @@ off with `--classic`. Details in [docs/remaster.md](docs/remaster.md).
   scrolling, with the scoreboard under it. Not redrawn — the game keeps the
   entire table in video memory and only ever showed part of it; this shows
   the rest. Made for a tall window or a monitor turned on its side.
-- **Its own window**, drawn with Direct3D 11: resizable, borderless
+- **Its own window**, drawn with Direct3D 11 (SDL2 on Linux): resizable, borderless
   fullscreen (F11, Alt+Enter), remembered where you left it.
 - **Scaling** (F12): sharp-bilinear (default), smooth, CRT, nearest, integer.
   **Vivid** colour (F9). A dark blur of the picture beside it instead of
@@ -185,6 +186,26 @@ settings. A tool installed in this window is not on `PATH` until you open a new
 one. `cmake` needs the *Visual Studio* generator line in step 3 on the first run
 only.
 
+### On Linux
+
+The same game, built natively: gcc and SDL2, no Wine.
+
+```sh
+./setup.sh                  # or: ./setup.sh /the/folder/holding/PINBALL.EXE
+./epicpinball.sh
+```
+
+`setup.sh` takes the same steps as Setup.cmd. If gcc, CMake, Python 3, git
+or SDL2's development files are missing, it names the packages for Debian,
+Ubuntu, Fedora and Arch and stops. It finds the game in `~/GOG Games` or
+`~/Games`, or uses GOG's offline Windows installer from `~/Downloads`
+(unpacked with innoextract). It copies the game into `original/` with
+upper-case names, fetches pcrecomp next to this folder, and runs
+`tools/discover.py`, which builds into `build-linux/`. On Debian 13 it
+settles in four rounds, about 85 seconds. After a change, `./build-linux.sh`
+rebuilds. `python3 tools/conformance.py` runs the checks against
+`build-linux/epicpinball`.
+
 ## Usage
 
 ```
@@ -238,8 +259,9 @@ The [Step by step](#step-by-step) route is the build. What else is here:
 | `tools/lift.py` | one program or driver → C, at the segment it runs at |
 | `tools/discover.py` | lift, build, play, repeat |
 | `tools/conformance.py` | the scripted checks; `--update` records a new baseline |
+| `setup.sh`, `build-linux.sh` | the Linux quick start and rebuild |
 | `tests/selftest.c` | the split screen, SB16 stereo and the image registry, with no game data — what CI runs (`cmake --build build --target selftest`) |
-| `src/` | the DOS machine: `dos.c` (DOS, BIOS, EXEC), `images.c` (which lifted code is where), `machine.c` (PIC, PIT, keyboard, interrupts), `vga.c`, `audio.c` (SB16, DMA), `host.c` (window, input, recording) |
+| `src/` | the DOS machine: `dos.c` (DOS, BIOS, EXEC), `images.c` (which lifted code is where), `machine.c` (PIC, PIT, keyboard, interrupts), `vga.c`, `audio.c` (SB16, DMA), `host.c` (window, input, recording: Win32, or SDL2 on Linux), `present.c` (Direct3D 11, or SDL2), `pad.c` |
 | `docs/` | [architecture](docs/architecture.md), [lifting](docs/lifting.md), [conformance](docs/conformance.md) |
 
 A trace build (`cmake -B build-dbg -DEPIC_TRACE=ON`, then

@@ -20,13 +20,93 @@
  *
  * Any failure (no D3D11, no d3dcompiler_47) returns 0 and host.c draws with
  * GDI instead. Without a GPU, WARP is still a D3D11 device.
+ *
+ * On Linux the same modes are drawn with SDL2's renderer (the GPU when there
+ * is one, else SDL's software renderer, which also makes the --present
+ * shots): sharp is a nearest prescale to whole multiples, then bilinear the
+ * rest of the way; CRT lays its scanlines and mask over that as a multiply;
+ * vivid and the blur are the CPU's, as here.
  */
 #define COBJMACROS
 #include "machine.h"
+#include <math.h>
+#ifdef _WIN32
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi.h>
-#include <math.h>
+#else
+#include <SDL.h>
+#endif
+
+/* ---- the backdrop, on the CPU ---------------------------------------------------- */
+
+/* Three box blurs of radius r, across then down: close to a Gaussian.
+ * One channel of w x h, in place; tmp holds max(w, h). */
+static void blur1(uint16_t *c, int w, int h, int r, uint16_t *tmp)
+{
+    for (int pass = 0; pass < 3; pass++) {
+        for (int y = 0; y < h; y++) {
+            uint16_t *p = c + y * w; int sum = 0, n = 2 * r + 1;
+            for (int x = -r - 1; x < r; x++) sum += p[x < 0 ? 0 : x >= w ? w - 1 : x];
+            for (int x = 0; x < w; x++) {
+                sum += p[x + r >= w ? w - 1 : x + r] - p[x - r - 1 < 0 ? 0 : x - r - 1];
+                tmp[x] = (uint16_t)(sum / n);
+            }
+            memcpy(p, tmp, w * 2);
+        }
+        for (int x = 0; x < w; x++) {
+            int sum = 0, n = 2 * r + 1;
+            for (int y = -r - 1; y < r; y++) sum += c[(y < 0 ? 0 : y >= h ? h - 1 : y) * w + x];
+            for (int y = 0; y < h; y++) {
+                sum += c[(y + r >= h ? h - 1 : y + r) * w + x] - c[(y - r - 1 < 0 ? 0 : y - r - 1) * w + x];
+                tmp[y] = (uint16_t)(sum / n);
+            }
+            for (int y = 0; y < h; y++) c[y * w + x] = tmp[y];
+        }
+    }
+}
+
+/* The picture, an eighth the size, blurred and darkened: what sits beside it.
+ * Frames are at most 640x480, so the eighth is at most 80x60. */
+static uint32_t back_buf[80 * 60];
+static uint16_t chan[3][80 * 60], tmp16[80];
+
+static void make_backdrop(const uint32_t *f, int w, int h, int *bw, int *bh)
+{
+    int W = w / 8, H = h / 8;
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            int s[3] = {0};
+            for (int j = 0; j < 8; j++)
+                for (int i = 0; i < 8; i++) {
+                    uint32_t p = f[(y * 8 + j) * w + x * 8 + i];
+                    s[0] += p >> 16 & 255; s[1] += p >> 8 & 255; s[2] += p & 255;
+                }
+            for (int c = 0; c < 3; c++) chan[c][y * W + x] = (uint16_t)(s[c] / 64);
+        }
+    for (int c = 0; c < 3; c++) blur1(chan[c], W, H, 2, tmp16);
+    for (int i = 0; i < W * H; i++)                    /* at 40% */
+        back_buf[i] = 0xFF000000u | (uint32_t)(chan[0][i] * 2 / 5) << 16 | (uint32_t)(chan[1][i] * 2 / 5) << 8 | (uint32_t)(chan[2][i] * 2 / 5);
+    *bw = W; *bh = H;
+}
+
+/* ---- drawing -------------------------------------------------------------------- */
+
+void present_rect(int cw, int ch, int w, int h, double aspect, int mode, RECT *r)
+{
+    int pw, ph;
+    if (mode == PRESENT_INTEGER) {
+        int k = cw / w < ch / h ? cw / w : ch / h;
+        if (k < 1) k = 1;
+        pw = w * k; ph = h * k;
+    } else {
+        pw = cw; ph = (int)(cw / aspect + 0.5);
+        if (ph > ch) { ph = ch; pw = (int)(ch * aspect + 0.5); }
+    }
+    r->left = (cw - pw) / 2; r->top = (ch - ph) / 2; r->right = r->left + pw; r->bottom = r->top + ph;
+}
+
+#ifdef _WIN32
 
 typedef HRESULT (WINAPI *compile_fn)(LPCVOID, SIZE_T, LPCSTR, const void *, void *, LPCSTR, LPCSTR,
                                      UINT, UINT, ID3DBlob **, ID3DBlob **);
@@ -161,74 +241,6 @@ static void upload(Tex *t, const uint32_t *px, int w, int h)
     ID3D11DeviceContext_UpdateSubresource(d.ctx, (ID3D11Resource *)t->tex, 0, NULL, px, w * 4, 0);
 }
 
-/* ---- the backdrop, on the CPU ---------------------------------------------------- */
-
-/* Three box blurs of radius r, across then down: close to a Gaussian.
- * One channel of w x h, in place; tmp holds max(w, h). */
-static void blur1(uint16_t *c, int w, int h, int r, uint16_t *tmp)
-{
-    for (int pass = 0; pass < 3; pass++) {
-        for (int y = 0; y < h; y++) {
-            uint16_t *p = c + y * w; int sum = 0, n = 2 * r + 1;
-            for (int x = -r - 1; x < r; x++) sum += p[x < 0 ? 0 : x >= w ? w - 1 : x];
-            for (int x = 0; x < w; x++) {
-                sum += p[x + r >= w ? w - 1 : x + r] - p[x - r - 1 < 0 ? 0 : x - r - 1];
-                tmp[x] = (uint16_t)(sum / n);
-            }
-            memcpy(p, tmp, w * 2);
-        }
-        for (int x = 0; x < w; x++) {
-            int sum = 0, n = 2 * r + 1;
-            for (int y = -r - 1; y < r; y++) sum += c[(y < 0 ? 0 : y >= h ? h - 1 : y) * w + x];
-            for (int y = 0; y < h; y++) {
-                sum += c[(y + r >= h ? h - 1 : y + r) * w + x] - c[(y - r - 1 < 0 ? 0 : y - r - 1) * w + x];
-                tmp[y] = (uint16_t)(sum / n);
-            }
-            for (int y = 0; y < h; y++) c[y * w + x] = tmp[y];
-        }
-    }
-}
-
-/* The picture, an eighth the size, blurred and darkened: what sits beside it.
- * Frames are at most 640x480, so the eighth is at most 80x60. */
-static uint32_t back_buf[80 * 60];
-static uint16_t chan[3][80 * 60], tmp16[80];
-
-static void make_backdrop(const uint32_t *f, int w, int h, int *bw, int *bh)
-{
-    int W = w / 8, H = h / 8;
-    for (int y = 0; y < H; y++)
-        for (int x = 0; x < W; x++) {
-            int s[3] = {0};
-            for (int j = 0; j < 8; j++)
-                for (int i = 0; i < 8; i++) {
-                    uint32_t p = f[(y * 8 + j) * w + x * 8 + i];
-                    s[0] += p >> 16 & 255; s[1] += p >> 8 & 255; s[2] += p & 255;
-                }
-            for (int c = 0; c < 3; c++) chan[c][y * W + x] = (uint16_t)(s[c] / 64);
-        }
-    for (int c = 0; c < 3; c++) blur1(chan[c], W, H, 2, tmp16);
-    for (int i = 0; i < W * H; i++)                    /* at 40% */
-        back_buf[i] = 0xFF000000u | (uint32_t)(chan[0][i] * 2 / 5) << 16 | (uint32_t)(chan[1][i] * 2 / 5) << 8 | (uint32_t)(chan[2][i] * 2 / 5);
-    *bw = W; *bh = H;
-}
-
-/* ---- drawing -------------------------------------------------------------------- */
-
-void present_rect(int cw, int ch, int w, int h, double aspect, int mode, RECT *r)
-{
-    int pw, ph;
-    if (mode == PRESENT_INTEGER) {
-        int k = cw / w < ch / h ? cw / w : ch / h;
-        if (k < 1) k = 1;
-        pw = w * k; ph = h * k;
-    } else {
-        pw = cw; ph = (int)(cw / aspect + 0.5);
-        if (ph > ch) { ph = ch; pw = (int)(ch * aspect + 0.5); }
-    }
-    r->left = (cw - pw) / 2; r->top = (ch - ph) / 2; r->right = r->left + pw; r->bottom = r->top + ph;
-}
-
 static void draw(ID3D11RenderTargetView *rtv, int cw, int ch, const uint32_t *f, int w, int h,
                  double aspect, const Present *s)
 {
@@ -331,3 +343,160 @@ int present_offscreen(const uint32_t *f, int w, int h, double aspect, const Pres
     ID3D11RenderTargetView_Release(rtv); ID3D11Texture2D_Release(st); ID3D11Texture2D_Release(rt);
     return ok;
 }
+
+#else
+
+/* ---- SDL2: Linux ----------------------------------------------------------------- */
+
+typedef struct {
+    SDL_Renderer *r;
+    SDL_Texture *frame, *back, *mid, *crt;
+    int fw, fh, bw, bh, mw, mh;
+    int cx, cw, ch, csrc;                /* what crt was made for */
+} Sdl;
+
+static Sdl win_sdl;
+
+/* A texture of this size, made again only when the size changes */
+static SDL_Texture *sized(Sdl *p, SDL_Texture **t, int *tw, int *th, int w, int h, int access)
+{
+    if (!*t || *tw != w || *th != h) {
+        if (*t) SDL_DestroyTexture(*t);
+        *t = SDL_CreateTexture(p->r, SDL_PIXELFORMAT_ARGB8888, access, w, h);
+        SDL_SetTextureBlendMode(*t, SDL_BLENDMODE_NONE);
+        *tw = w; *th = h;
+    }
+    return *t;
+}
+
+/* The shader's vivid look, on the frame before it is scaled */
+static uint32_t vivid_buf[640 * 480];
+
+static const uint32_t *vivid(const uint32_t *f, int n)
+{
+    for (int i = 0; i < n; i++) {
+        float c[3] = { (f[i] >> 16 & 255) / 255.f, (f[i] >> 8 & 255) / 255.f, (f[i] & 255) / 255.f };
+        float l = c[0] * 0.299f + c[1] * 0.587f + c[2] * 0.114f;
+        uint32_t o = 0xFF000000u;
+        for (int k = 0; k < 3; k++) {
+            float v = ((l + (c[k] - l) * 1.3f) - 0.5f) * 1.08f + 0.5f;
+            o |= (uint32_t)(v < 0 ? 0 : v > 1 ? 255 : v * 255 + 0.5f) << (16 - 8 * k);
+        }
+        vivid_buf[i] = o;
+    }
+    return vivid_buf;
+}
+
+/* The shader's beam and aperture grille, as a picture to multiply by. Its
+ * factors go above 1, so it is blended as 2*src*dst and stored halved; a
+ * renderer without that blend (the software one) gets a plain multiply,
+ * which loses the boost and comes out darker. */
+static void crt_overlay(Sdl *p, const SDL_Rect *d, int src_h)
+{
+    if (!p->crt || p->cw != d->w || p->ch != d->h || p->cx != d->x || p->csrc != src_h) {
+        static const float mask[3][3] = { { 1.25f, .87f, .87f }, { .87f, 1.25f, .87f }, { .87f, .87f, 1.25f } };
+        if (p->crt) SDL_DestroyTexture(p->crt);
+        p->crt = SDL_CreateTexture(p->r, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, d->w, d->h);
+        SDL_BlendMode twice = SDL_ComposeCustomBlendMode(SDL_BLENDFACTOR_DST_COLOR, SDL_BLENDFACTOR_SRC_COLOR,
+                                                         SDL_BLENDOPERATION_ADD, SDL_BLENDFACTOR_ZERO,
+                                                         SDL_BLENDFACTOR_ONE, SDL_BLENDOPERATION_ADD);
+        float scale = SDL_SetTextureBlendMode(p->crt, twice) == 0 ? 0.5f : 1.0f;
+        if (scale == 1.0f) SDL_SetTextureBlendMode(p->crt, SDL_BLENDMODE_MOD);
+        float k = ((float)d->h / src_h - 1.5f) / 1.5f;
+        k = k < 0 ? 0 : k > 1 ? 1 : k;
+        uint32_t *px = malloc((size_t)d->w * d->h * 4);
+        for (int y = 0; px && y < d->h; y++) {
+            float t = (y + 0.5f) / d->h * src_h, dd = t - floorf(t) - 0.5f;
+            float beam = 1 + (expf(-dd * dd * 8) * 1.6f - 1) * k;
+            for (int x = 0; x < d->w; x++) {
+                const float *m = mask[(unsigned)(d->x + x) % 3];
+                uint32_t o = 0xFF000000u;
+                for (int c = 0; c < 3; c++) {
+                    float v = beam * (1 + (m[c] - 1) * k) * scale;
+                    o |= (uint32_t)(v > 1 ? 255 : v * 255 + 0.5f) << (16 - 8 * c);
+                }
+                px[(size_t)y * d->w + x] = o;
+            }
+        }
+        if (px) SDL_UpdateTexture(p->crt, NULL, px, d->w * 4);
+        free(px);
+        p->cx = d->x; p->cw = d->w; p->ch = d->h; p->csrc = src_h;
+    }
+    SDL_RenderCopy(p->r, p->crt, NULL, d);
+}
+
+static void sdl_draw(Sdl *p, int cw, int ch, const uint32_t *f, int w, int h, double aspect, const Present *s)
+{
+    SDL_Renderer *r = p->r;
+    RECT pr; present_rect(cw, ch, w, h, aspect, s->mode, &pr);
+    SDL_Rect d = { (int)pr.left, (int)pr.top, (int)(pr.right - pr.left), (int)(pr.bottom - pr.top) };
+
+    SDL_Texture *t = sized(p, &p->frame, &p->fw, &p->fh, w, h, SDL_TEXTUREACCESS_STREAMING);
+    SDL_UpdateTexture(t, NULL, s->look ? vivid(f, w * h) : f, w * 4);
+    if (s->mode == PRESENT_SHARP || s->mode == PRESENT_CRT) {
+        /* sharp-bilinear: whole multiples with nearest, the rest of the way bilinear */
+        int kx = d.w / w > 1 ? d.w / w : 1, ky = d.h / h > 1 ? d.h / h : 1;
+        SDL_Texture *m = sized(p, &p->mid, &p->mw, &p->mh, w * kx, h * ky, SDL_TEXTUREACCESS_TARGET);
+        SDL_SetTextureScaleMode(t, SDL_ScaleModeNearest);
+        SDL_SetRenderTarget(r, m);
+        SDL_RenderCopy(r, t, NULL, NULL);
+        t = m;
+    }
+    SDL_SetRenderTarget(r, NULL);
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+    SDL_RenderClear(r);
+    if (s->bars) {
+        int bw, bh;
+        make_backdrop(f, w, h, &bw, &bh);
+        SDL_Texture *b = sized(p, &p->back, &p->bw, &p->bh, bw, bh, SDL_TEXTUREACCESS_STREAMING);
+        SDL_UpdateTexture(b, NULL, back_buf, bw * 4);
+        SDL_SetTextureScaleMode(b, SDL_ScaleModeLinear);
+        double covw = cw, covh = cw / aspect;           /* the backdrop covers the window */
+        if (covh < ch) { covh = ch; covw = ch * aspect; }
+        SDL_Rect c = { (int)((cw - covw) / 2), (int)((ch - covh) / 2), (int)covw, (int)covh };
+        SDL_RenderCopy(r, b, NULL, &c);
+    }
+    SDL_SetTextureScaleMode(t, s->mode == PRESENT_NEAREST || s->mode == PRESENT_INTEGER
+                               ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
+    SDL_RenderCopy(r, t, NULL, &d);
+    if (s->mode == PRESENT_CRT) crt_overlay(p, &d, h);
+}
+
+int present_window(SDL_Window *wnd, const uint32_t *f, int w, int h, double aspect, const Present *s)
+{
+    if (!win_sdl.r) {
+        win_sdl.r = SDL_CreateRenderer(wnd, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
+        if (!win_sdl.r) win_sdl.r = SDL_CreateRenderer(wnd, -1, SDL_RENDERER_SOFTWARE);
+        if (!win_sdl.r) { fprintf(stderr, "[present] no SDL renderer: %s\n", SDL_GetError()); return 0; }
+        SDL_RendererInfo i;
+        SDL_GetRendererInfo(win_sdl.r, &i);
+        fprintf(stderr, "[present] SDL %s\n", i.name);
+    }
+    int cw, ch;
+    SDL_GetRendererOutputSize(win_sdl.r, &cw, &ch);
+    if (cw <= 0 || ch <= 0) return 1;
+    sdl_draw(&win_sdl, cw, ch, f, w, h, aspect, s);
+    SDL_RenderPresent(win_sdl.r);
+    return 1;
+}
+
+/* --present: SDL's software renderer into memory, no display needed */
+int present_offscreen(const uint32_t *f, int w, int h, double aspect, const Present *s,
+                      int ow, int oh, uint32_t *out)
+{
+    SDL_Surface *sf = SDL_CreateRGBSurfaceWithFormat(0, ow, oh, 32, SDL_PIXELFORMAT_ARGB8888);
+    Sdl p = { 0 };
+    p.r = sf ? SDL_CreateSoftwareRenderer(sf) : NULL;
+    if (!p.r) { SDL_FreeSurface(sf); return 0; }
+    sdl_draw(&p, ow, oh, f, w, h, aspect, s);
+    SDL_RenderPresent(p.r);
+    for (int y = 0; y < oh; y++) {
+        const uint32_t *row = (const uint32_t *)((const uint8_t *)sf->pixels + (size_t)y * sf->pitch);
+        for (int x = 0; x < ow; x++) out[(size_t)y * ow + x] = row[x] | 0xFF000000u;
+    }
+    SDL_DestroyRenderer(p.r);                           /* and its textures */
+    SDL_FreeSurface(sf);
+    return 1;
+}
+
+#endif
