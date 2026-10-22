@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0-alpha.2] - 2026-10-22
+
+### Fixed
+- `setup.sh` given a folder took the shareware demo in its `DEMO/` (it has
+  `EP1.EXE` too) when `find` listed it first; it takes the shallowest now.
+
 ## [0.2.0-alpha.1] - 2026-10-22
 
 ### Added
@@ -17,10 +23,6 @@ All notable changes to this project are documented here. The format follows
   end a failure with `Setup stopped:`, find GOG's installer in the folder
   they are given, and need no git when pcrecomp is already beside them (the
   installer downloads it, at the pinned commit).
-
-### Fixed
-- `setup.sh` given a folder took the shareware demo in its `DEMO/` (it has
-  `EP1.EXE` too) when `find` listed it first; it takes the shallowest now.
 - **Linux**, natively: the same lifted C and DOS machine built with gcc,
   with SDL2 for the window, sound and pad (`src/host.c`, `src/present.c`,
   `src/pad.c`); `setup.sh` (the tools, the game, pcrecomp, lift, build, a
