@@ -6,7 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0-alpha.1] - 2026-10-22
+
 ### Added
+- **The installer**, for Windows and Linux: recomp-launcher built from
+  `launcher/launcher.json` by `.github/workflows/installer.yml`. Every push
+  to main leaves it as an artifact; a `v*` tag puts it on that release, and
+  the tag is the version it shows. It finds the game, builds, and plays.
+- `setup.sh` takes `--yes --game-dir DIR`; both setups print `[n/5]` steps,
+  end a failure with `Setup stopped:`, find GOG's installer in the folder
+  they are given, and need no git when pcrecomp is already beside them (the
+  installer downloads it, at the pinned commit).
 - **Linux**, natively: the same lifted C and DOS machine built with gcc,
   with SDL2 for the window, sound and pad (`src/host.c`, `src/present.c`,
   `src/pad.c`); `setup.sh` (the tools, the game, pcrecomp, lift, build, a

@@ -31,10 +31,11 @@ $Log = Join-Path $Root "setup.log"
 $PcrecompUrl = "https://github.com/sp00nznet/pcrecomp.git"
 $PcrecompRef = "1dfdaef3a51c670e5931b0e5ef1a3b6e6cd9383e"  # pcrecomp#74, #75
 
+function Step($n, $m) { Write-Host ""; Say "[$n/5] $m" }
 function Say($m) { Write-Host $m; $m | Out-File $Log -Append -Encoding utf8 }
 function Fail($m) {
     Write-Host ""
-    Write-Host $m -ForegroundColor Red
+    Write-Host "Setup stopped: $m" -ForegroundColor Red
     Write-Host "Details are in $Log"
     exit 1
 }
@@ -65,20 +66,20 @@ function Install($n) {
 }
 
 # ---- 1. tools ---------------------------------------------------------------
-Say "Checking tools..."
+Step 1 "Checking the tools"
 # `python` may be the Microsoft Store alias that only opens the Store; the
 # py launcher is what a python.org install puts on PATH.
 function Find-Python { if (Have "py") { "py" } elseif ((Have "python") -and ((& python --version 2>&1) -match "Python 3")) { "python" } else { $null } }
 if (-not (Find-Python)) { Install @{ name = "Python 3"; id = "Python.Python.3.12"; size = "about 30 MB"; why = "runs the lifter (tools\lift.py)" } }
 $py = Find-Python
 if (-not (Have "cmake")) { Install @{ name = "CMake"; id = "Kitware.CMake"; size = "about 35 MB"; why = "configures the build" } }
-if (-not (Have "git")) { Install @{ name = "Git"; id = "Git.Git"; size = "about 60 MB"; why = "fetches the pcrecomp toolkit" } }
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vs = if (Test-Path $vswhere) { & $vswhere -latest -version "[17.0,18.0)" -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath } else { $null }
 if (-not $vs) { Install @{ name = "Visual Studio 2022 Build Tools (C++)"; id = "Microsoft.VisualStudio.2022.BuildTools"; size = "about 2 GB"; why = "compiles the lifted C"; args = "--override `"--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended`"" } }
 if (-not (Have "ffmpeg")) { Say "  (ffmpeg not found: everything works except --record. winget install Gyan.FFmpeg adds it.)" }
 
 # ---- 2 + 3. the game ----------------------------------------------------------------
+Step 2 "Finding Epic Pinball"
 $dest = Join-Path $Root "original"
 function Has-Game($dir) { return (Test-Path (Join-Path $dir "PINBALL.EXE")) -and (Test-Path (Join-Path $dir "EP1.EXE")) }
 
@@ -97,7 +98,9 @@ function Find-Installed {
 function Find-Installer {
     $c = @()
     if ($GameDir -and (Test-Path $GameDir -PathType Leaf)) { $c += $GameDir }
-    $c += Get-ChildItem (Join-Path $env:USERPROFILE "Downloads"), $Root -Filter "setup_epic_pinball*.exe" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+    $dirs = @((Join-Path $env:USERPROFILE "Downloads"), $Root)
+    if ($GameDir -and (Test-Path $GameDir -PathType Container)) { $dirs = @($GameDir) + $dirs }
+    $c += Get-ChildItem $dirs -Filter "setup_epic_pinball*.exe" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
     return $c | Select-Object -First 1
 }
 
@@ -130,22 +133,31 @@ if (Has-Game $dest) {
 }
 
 # ---- 4. the toolkit ----------------------------------------------------------------
+Step 3 "The pcrecomp toolkit"
 if ($env:PCRECOMP_HOME -and (Test-Path "$env:PCRECOMP_HOME\tools\lift\lift16.py")) {
     $pcr = $env:PCRECOMP_HOME
 } else {
     $pcr = Join-Path (Split-Path $Root -Parent) "pcrecomp"
-    if (-not (Test-Path "$pcr\tools\lift\lift16.py")) {
-        Run "fetching pcrecomp into $pcr" { git clone --quiet $PcrecompUrl $pcr }
+    if ((Test-Path "$pcr\tools\lift\lift16.py") -and -not (Test-Path "$pcr\.git")) {
+        # the recomp launcher's download, already at $PcrecompRef (launcher\launcher.json)
+    } else {
+        if (-not (Have "git")) { Install @{ name = "Git"; id = "Git.Git"; size = "about 60 MB"; why = "fetches the pcrecomp toolkit" } }
+        if (-not (Test-Path "$pcr\tools\lift\lift16.py")) {
+            Run "fetching pcrecomp into $pcr" { git clone --quiet $PcrecompUrl $pcr }
+        }
+        Run "checking out pcrecomp $PcrecompRef" { git -C $pcr fetch --quiet origin; git -C $pcr checkout --quiet $PcrecompRef }
     }
-    Run "checking out pcrecomp $PcrecompRef" { git -C $pcr fetch --quiet origin; git -C $pcr checkout --quiet $PcrecompRef }
 }
+Say "  pcrecomp: $pcr"
 $env:PCRECOMP_HOME = $pcr
 
 # ---- 5. lift + build -------------------------------------------------------------
+Step 4 "Lifting and building, then playing each table headless to find the rest"
 Run "configuring the build" { cmake -B build -G "Visual Studio 17 2022" -A x64 "-DPCRECOMP_HOME=$pcr" }
 Run "lifting and building, then playing each table headless to find the rest (a few minutes)" { & $py tools\discover.py }
 
 # ---- 6. shortcut -----------------------------------------------------------------
+Step 5 "The shortcut"
 $exe = Join-Path $Root "build\Release\epicpinball.exe"
 if (-not (Test-Path $exe)) { Fail "The build finished but $exe is missing." }
 $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $Root "Epic Pinball.lnk"))

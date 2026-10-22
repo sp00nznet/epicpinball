@@ -114,6 +114,26 @@ You need your own copy of the game. GOG's *Epic Pinball: The Complete
 Collection* works, installed or as the offline installer
 (`setup_epic_pinball_the_complete_collection_*.exe`). Other versions are untested.
 
+### The installer (easiest)
+
+From the [releases](https://github.com/sp00nznet/epicpinball/releases),
+download the installer for your system:
+`EpicPinball-Recomp-Installer-windows-x64.exe`, or
+`EpicPinball-Recomp-Installer-linux-x64.tar.gz` (unpack it, then run it).
+
+1. It finds GOG's install by itself. Otherwise, **Choose folder…** and pick
+   the folder holding `PINBALL.EXE`, or the one holding GOG's
+   `setup_epic_pinball_*.exe`.
+2. **Build**: it downloads this repository and pcrecomp, then runs the same
+   setup as below with no questions. On Windows, a first build installs the
+   compilers it needs. On Linux, it tells you which packages to install.
+3. **Play**. Next time it opens straight to this. Its corner shows its
+   version, and it says when a newer release is out.
+
+Nothing of the game is in the installer. The build is made from your copy and
+stays on your machine. The installer isn't signed: Windows SmartScreen asks
+first (**More info**, **Run anyway**).
+
 ### Quick start
 
 1. Download this repository (Code → Download ZIP) and unzip it anywhere.

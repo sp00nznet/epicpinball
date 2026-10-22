@@ -1,0 +1,20 @@
+{
+  "title": "Epic Pinball",
+  "repo": "sp00nznet/epicpinball",
+  "accent": "#c8329b",
+  "note": {
+    "windows": "The first build takes 5 to 15 minutes and about 1 GB. Python, CMake and the Visual Studio Build Tools (about 2 GB) are installed if they are missing; Windows asks for permission once. Works with GOG's Complete Collection (installed, or its offline installer) and the DOS release.",
+    "default": "The first build takes 5 to 15 minutes and about 1 GB. It needs gcc, CMake, Python 3 and SDL2's development files (and innoextract for GOG's installer) from your package manager; if any are missing it says which, with the command to install them. Works with GOG's Complete Collection and the DOS release."
+  },
+  "game": {
+    "name": "Epic Pinball",
+    "files": ["PINBALL.EXE|pinball.exe|setup_epic_pinball*.exe"],
+    "registry": ["HKLM\\SOFTWARE\\WOW6432Node\\GOG.com\\Games\\1965302672\\path", "HKLM\\SOFTWARE\\GOG.com\\Games\\1965302672\\path"]
+  },
+  "sources": [{ "repo": "sp00nznet/pcrecomp", "ref": "1dfdaef3a51c670e5931b0e5ef1a3b6e6cd9383e", "dir": "pcrecomp" }],
+  "setup": {
+    "windows": ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts\\setup.ps1", "-Yes", "-GameDir", "{game}"],
+    "default": ["bash", "setup.sh", "--yes", "--game-dir", "{game}"]
+  },
+  "play": "[Ee]pic*"
+}

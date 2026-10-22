@@ -15,10 +15,20 @@
 #
 #   ./setup.sh                    # look for the game
 #   ./setup.sh ~/games/pinball    # the folder holding PINBALL.EXE, or GOG's setup_*.exe
+#   ./setup.sh --yes --game-dir DIR   # the same, as the recomp launcher runs it
 #
 # Every step is skipped when its result is already there, so running it
 # again carries on from where it stopped.
 set -e
+GAME=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --yes) ;;   # it never asks; accepted for the recomp launcher
+    --game-dir) GAME=$2; shift ;;
+    *) GAME=$1 ;;
+  esac
+  shift
+done
 cd "$(dirname "$0")"
 ROOT=$PWD
 # The toolkit revision this game needs (README, "Building from source").
@@ -30,9 +40,9 @@ step() { printf '\n\033[36m%s\033[0m\n' "$*"; }
 fail() { printf '\n\033[31mSetup stopped: %s\033[0m\n' "$*" >&2; exit 1; }
 
 # ---- 1. tools -------------------------------------------------------------------
-step "Checking the tools"
+step "[1/5] Checking the tools"
 need=()
-for t in gcc cmake python3 git pkg-config; do command -v "$t" >/dev/null || need+=("$t"); done
+for t in gcc cmake python3 pkg-config; do command -v "$t" >/dev/null || need+=("$t"); done
 command -v pkg-config >/dev/null && ! pkg-config --exists sdl2 && need+=("SDL2's development files")
 if [ ${#need[@]} -gt 0 ]; then
   say "  Missing: ${need[*]}. From your package manager, for example:"
@@ -54,15 +64,18 @@ game_in() {
   done
 }
 
-step "Finding Epic Pinball"
+step "[2/5] Finding Epic Pinball"
 dest=$ROOT/original
 if [ -n "$(game_in "$dest")" ]; then
   say "  already in original/"
 else
   src=
   inst=
-  if [ -n "$1" ]; then
-    if [ -d "$1" ]; then src=$(game_in "$1"); else inst=$1; fi
+  if [ -n "$GAME" ]; then
+    if [ -d "$GAME" ]; then
+      src=$(game_in "$GAME")
+      [ -n "$src" ] || inst=$(ls "$GAME"/setup_epic_pinball*.exe 2>/dev/null | head -1)
+    else inst=$GAME; fi
   else
     for d in "$HOME/GOG Games" "$HOME/Games" "$HOME/games"; do
       [ -d "$d" ] && src=$(game_in "$d") && [ -n "$src" ] && break
@@ -90,25 +103,31 @@ else
 fi
 
 # ---- 4. the toolkit -----------------------------------------------------------------
-step "The pcrecomp toolkit"
+step "[3/5] The pcrecomp toolkit"
 if [ -n "$PCRECOMP_HOME" ] && [ -f "$PCRECOMP_HOME/tools/lift/lift16.py" ]; then
   say "  $PCRECOMP_HOME (PCRECOMP_HOME)"
 else
   PCRECOMP_HOME=$(cd .. && pwd)/pcrecomp
-  [ -f "$PCRECOMP_HOME/tools/lift/lift16.py" ] || git clone --quiet "$PCRECOMP_URL" "$PCRECOMP_HOME"
-  git -C "$PCRECOMP_HOME" fetch --quiet origin
-  git -C "$PCRECOMP_HOME" checkout --quiet "$PCRECOMP_REF"
-  say "  $PCRECOMP_HOME at ${PCRECOMP_REF:0:7}"
+  if [ -f "$PCRECOMP_HOME/tools/lift/lift16.py" ] && [ ! -d "$PCRECOMP_HOME/.git" ]; then
+    # the recomp launcher's download, already at PCRECOMP_REF (launcher/launcher.json)
+    say "  $PCRECOMP_HOME"
+  else
+    command -v git >/dev/null || fail "git fetches pcrecomp; install it from your package manager, then run ./setup.sh again."
+    [ -f "$PCRECOMP_HOME/tools/lift/lift16.py" ] || git clone --quiet "$PCRECOMP_URL" "$PCRECOMP_HOME"
+    git -C "$PCRECOMP_HOME" fetch --quiet origin
+    git -C "$PCRECOMP_HOME" checkout --quiet "$PCRECOMP_REF"
+    say "  $PCRECOMP_HOME at ${PCRECOMP_REF:0:7}"
+  fi
 fi
 export PCRECOMP_HOME
 
 # ---- 5. lift + build ----------------------------------------------------------------
-step "Lifting and building, then playing each table headless to find the rest"
+step "[4/5] Lifting and building, then playing each table headless to find the rest"
 python3 tools/discover.py
 [ -x build-linux/epicpinball ] || fail "the build finished but build-linux/epicpinball is missing."
 
 # ---- 6. launcher --------------------------------------------------------------------
 printf '#!/bin/sh\ncd "$(dirname "$0")" && exec build-linux/epicpinball "$@"\n' > epicpinball.sh
 chmod +x epicpinball.sh
-step "Ready: ./epicpinball.sh"
+step "[5/5] Ready: ./epicpinball.sh"
 say "Shift keys flip, Space plunges, Alt+Enter toggles fullscreen, F10 or right-click for settings."
