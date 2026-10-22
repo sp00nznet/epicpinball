@@ -55,10 +55,11 @@ fi
 say "  ok"
 
 # ---- 2, 3. the game -----------------------------------------------------------------
-# The folder under $1 holding PINBALL.EXE with the tables beside it (not
-# the shareware one in DEMO/), any case
+# The folder under $1 holding PINBALL.EXE with the tables beside it, any
+# case; the shallowest, so not the shareware one in its DEMO/ (which has
+# EP1.EXE too)
 game_in() {
-  find "$1" -iname PINBALL.EXE 2>/dev/null | while read -r f; do
+  find "$1" -iname PINBALL.EXE 2>/dev/null | awk -F/ '{print NF "	" $0}' | sort -n | cut -f2- | while read -r f; do
     d=$(dirname "$f")
     if [ -n "$(find "$d" -maxdepth 1 -iname EP1.EXE)" ]; then echo "$d"; break; fi
   done
